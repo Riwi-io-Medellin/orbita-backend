@@ -1,7 +1,6 @@
 import re
 
 from authlib.integrations.starlette_client import OAuth
-from authlib.jose.errors import InvalidClaimError
 
 from app.config.settings import settings
 
@@ -30,8 +29,7 @@ _ISS_PATTERN = re.compile(
 
 
 def _validate_iss(claims, value):
-    if not _ISS_PATTERN.match(value):
-        raise InvalidClaimError("iss")
+    return bool(_ISS_PATTERN.match(value))
 
 
 ms_claims_options = {
