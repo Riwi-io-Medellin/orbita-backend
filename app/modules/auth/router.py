@@ -4,7 +4,7 @@ from app.config.settings import settings
 
 from app.modules.users.models import User
 
-from app.modules.auth.microsoft import oauth
+from app.modules.auth.microsoft import oauth, ms_claims_options
 
 from app.modules.auth.dependencies import get_current_user
 
@@ -56,7 +56,10 @@ async def auth_callback(
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        token = await oauth.microsoft.authorize_access_token(request)
+        token = await oauth.microsoft.authorize_access_token(
+            request,
+            claims_options=ms_claims_options,
+        )
     except Exception as exc:
         print(f"Microsoft OAuth callback failed: {exc!r}")
         return RedirectResponse(
