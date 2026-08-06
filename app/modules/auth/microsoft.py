@@ -1,4 +1,7 @@
+import re
+
 from authlib.integrations.starlette_client import OAuth
+from authlib.jose.errors import InvalidClaimError
 
 from app.config.settings import settings
 
@@ -16,3 +19,21 @@ oauth.register(
         "scope": "openid profile email User.Read offline_access"
     },
 )
+
+# "common" endpoint discovery doc returns issuer as a literal
+# "https://login.microsoftonline.com/{tenantid}/v2.0" template, not the real
+# tenant GUID, so Authlib's default exact-match "iss" check always fails.
+# Accept any Microsoft tenant issuer instead of the unexpanded template.
+_ISS_PATTERN = re.compile(
+    r"^https://login\.microsoftonline\.com/[0-9a-fA-F-]{36}/v2\.0$"
+)
+
+
+def _validate_iss(claims, value):
+    if not _ISS_PATTERN.match(value):
+        raise InvalidClaimError("iss")
+
+
+ms_claims_options = {
+    "iss": {"essential": True, "validate": _validate_iss},
+}
