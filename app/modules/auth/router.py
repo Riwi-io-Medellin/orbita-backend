@@ -17,7 +17,7 @@ from app.modules.users.service import UserService
 
 from app.modules.auth.jwt import create_access_token
 
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, JSONResponse
 
 router = APIRouter(
     prefix="/auth",
