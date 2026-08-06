@@ -45,7 +45,7 @@ async def logout():
         key="access_token",
         httponly=True,
         secure=True,  # Put true in Production
-        samesite="lax",
+        samesite="none",
     )
 
     return response
@@ -86,7 +86,7 @@ async def auth_callback(
         value=access_token,
         httponly=True,
         secure=True, # Change this line to True in Production
-        samesite="lax",
+        samesite="none",
         path="/",
         max_age=60 * settings.jwt_expire_minutes,
     )
