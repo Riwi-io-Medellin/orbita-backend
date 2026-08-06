@@ -68,12 +68,18 @@ async def auth_callback(
 
     microsoft_user = token["userinfo"]
 
-    user = await UserService.upsert(
-        db=db,
-        microsoft_id=microsoft_user["oid"],
-        email=microsoft_user["preferred_username"],
-        full_name=microsoft_user["name"],
-    )
+    try:
+        user = await UserService.upsert(
+            db=db,
+            microsoft_id=microsoft_user["oid"],
+            email=microsoft_user["preferred_username"],
+            full_name=microsoft_user["name"],
+        )
+    except Exception as exc:
+        print(f"Microsoft OAuth user upsert failed: {exc!r}")
+        return RedirectResponse(
+            url=f"{settings.frontend_url}/auth/callback?error=authentication_failed"
+        )
 
     access_token = create_access_token(
         user_id=str(user.id),
