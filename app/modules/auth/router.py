@@ -57,7 +57,8 @@ async def auth_callback(
 ):
     try:
         token = await oauth.microsoft.authorize_access_token(request)
-    except Exception:
+    except Exception as exc:
+        print(f"Microsoft OAuth callback failed: {exc!r}")
         return RedirectResponse(
             url=f"{settings.frontend_url}/auth/callback?error=authentication_failed"
         )
