@@ -1,17 +1,61 @@
 # Virtual environment
 .venv/
+venv/
+ENV/
 
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+*.egg-info/
+.eggs/
 
-# Environment variables
+# Node / JavaScript / Frontend (React, Vite, etc.)
+node_modules/
+dist/
+build/
+.next/
+.nuxt/
+out/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment variables & Secrets
 .env
+.env.*
+!.env.example
 
-# IDE
+# Databases & Logs
+logs/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# IDE & Editor
 .vscode/
 .idea/
+*.swp
+*.swo
+*.suo
 
 # OS
 .DS_Store
+Thumbs.db
+ehthumbs.db
+
+# AI Assistants & Context Files (Claude, Cursor, Windsurf, Cline, etc.)
+CLAUDE.md
+.claude/
+.cursor/
+.cursorignore
+.windsurfrules
+.cline/
+cline_docs/
+.continue/
+skills/
+.skills/
+skills-lock.json
