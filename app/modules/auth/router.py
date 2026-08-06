@@ -46,7 +46,7 @@ async def logout():
     response.delete_cookie(
         key="access_token",
         httponly=True,
-        secure=False,  # Put true in Production
+        secure=True,  # Put true in Production
         samesite="lax",
     )
 
@@ -87,7 +87,7 @@ async def auth_callback(
         key="access_token",
         value=access_token,
         httponly=True,
-        secure=False, # Change this line to True in Production
+        secure=True, # Change this line to True in Production
         samesite="lax",
         path="/",
         max_age=60 * settings.jwt_expire_minutes,
