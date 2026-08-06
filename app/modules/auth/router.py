@@ -27,11 +27,9 @@ router = APIRouter(
 
 @router.get("/login")
 async def login(request: Request):
-    redirect_uri = request.url_for("auth_callback")
-
     return await oauth.microsoft.authorize_redirect(
         request,
-        redirect_uri,
+        settings.microsoft_redirect_uri,
     )
 
 @router.post("/logout")
