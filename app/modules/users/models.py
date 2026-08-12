@@ -20,7 +20,7 @@ class User(Base):
     microsoft_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         unique=True,
-        nullable=False,
+        nullable=True,
     )
 
     email: Mapped[str] = mapped_column(
@@ -52,3 +52,5 @@ class User(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+    password_hash: Mapped[str | None] = mapped_column(String(255))

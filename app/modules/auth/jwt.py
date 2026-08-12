@@ -8,6 +8,7 @@ from app.config.settings import settings
 def create_access_token(
     user_id: str,
     email: str,
+    roles: list[str],
 ) -> str:
 
     expire = datetime.now(UTC) + timedelta(
@@ -17,6 +18,7 @@ def create_access_token(
     payload = {
         "sub": user_id,
         "email": email,
+        "roles": roles,
         "exp": expire,
     }
 

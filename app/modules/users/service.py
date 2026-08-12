@@ -103,3 +103,8 @@ class UserService:
         result = await db.execute(query)
 
         return result.scalar_one_or_none()
+
+    @staticmethod
+    async def get_by_email(db: AsyncSession, email: str) -> User | None:
+        result = await db.execute(select(User).where(User.email == email.lower()))
+        return result.scalar_one_or_none()
