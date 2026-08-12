@@ -11,6 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.modules.users.router import router as users_router
 from app.modules.auth.router import router as auth_router
+from app.modules.apps.router import router as apps_router
+from app.modules.auth.jwt import get_jwks
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -55,6 +57,11 @@ def health_check():
     }
 
 
+@app.get("/api/.well-known/jwks.json")
+def jwks():
+    return get_jwks()
+
+
 app.include_router(
     users_router,
     prefix="/api",
@@ -62,5 +69,10 @@ app.include_router(
 
 app.include_router(
     auth_router,
+    prefix="/api",
+)
+
+app.include_router(
+    apps_router,
     prefix="/api",
 )

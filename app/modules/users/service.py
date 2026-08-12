@@ -24,7 +24,7 @@ class UserService:
 
     # Creates an user if not exits
     @staticmethod
-    async def create(
+    async def create_user(
         db: AsyncSession,
         microsoft_id: str,
         email: str,
@@ -46,7 +46,7 @@ class UserService:
         return user
 
     @staticmethod
-    async def update(
+    async def update_user(
         db: AsyncSession,
         user: User,
         email: str,
@@ -63,7 +63,7 @@ class UserService:
 
     # Search for an user, if exits, then it updates the user, if not, its created
     @staticmethod
-    async def upsert(
+    async def upsert_user(
         db: AsyncSession,
         microsoft_id: str,
         email: str,
@@ -76,14 +76,14 @@ class UserService:
         )
 
         if user is None:
-            return await UserService.create(
+            return await UserService.create_user(
                 db,
                 microsoft_id,
                 email,
                 full_name,
             )
 
-        return await UserService.update(
+        return await UserService.update_user(
             db,
             user,
             email,
@@ -91,7 +91,7 @@ class UserService:
         )
 
     @staticmethod
-    async def get_by_id(
+    async def get_user_by_id(
         db: AsyncSession,
         user_id: UUID,
     ) -> User | None:

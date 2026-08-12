@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     jwt_algorithm: str
     jwt_expire_minutes: int
 
+    jwt_private_key: str
+    jwt_public_key: str
+    jwt_kid: str
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
