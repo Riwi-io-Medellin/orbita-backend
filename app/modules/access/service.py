@@ -1,0 +1,55 @@
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.modules.access.models import Application, AuditLog, GlobalRole, application_global_roles, user_global_roles
+from app.modules.users.models import User
+
+DEFAULT_ROLE = "coder"
+
+
+class AccessService:
+    @staticmethod
+    async def seed(db: AsyncSession) -> None:
+        await db.execute(insert(GlobalRole).values([
+            {"name": "admin", "description": "Administración de Órbita"},
+            {"name": "staff", "description": "Personal interno de Riwi"},
+            {"name": DEFAULT_ROLE, "description": "Coders de Riwi"},
+        ]).on_conflict_do_nothing(index_elements=["name"]))
+        await db.commit()
+
+    @staticmethod
+    async def ensure_default_role(db: AsyncSession, user: User) -> None:
+        has_role = await db.scalar(select(user_global_roles.c.user_id).where(user_global_roles.c.user_id == user.id).limit(1))
+        if has_role:
+            return
+        role_id = await db.scalar(select(GlobalRole.id).where(GlobalRole.name == DEFAULT_ROLE))
+        if role_id is not None:
+            await db.execute(insert(user_global_roles).values(user_id=user.id, global_role_id=role_id).on_conflict_do_nothing())
+            await db.commit()
+
+    @staticmethod
+    async def role_names(db: AsyncSession, user_id) -> list[str]:
+        result = await db.scalars(select(GlobalRole.name).join(user_global_roles).where(user_global_roles.c.user_id == user_id).order_by(GlobalRole.name))
+        return list(result)
+
+    @staticmethod
+    async def authorized_applications(db: AsyncSession, user_id) -> list[Application]:
+        result = await db.scalars(
+            select(Application).distinct()
+            .join(application_global_roles, application_global_roles.c.application_id == Application.id)
+            .join(user_global_roles, user_global_roles.c.global_role_id == application_global_roles.c.global_role_id)
+            .where(user_global_roles.c.user_id == user_id, Application.is_active.is_(True))
+            .order_by(Application.name)
+        )
+        return list(result)
+
+    @staticmethod
+    async def audit(db: AsyncSession, *, event: str, user_id=None, request=None, application_id=None, details: dict | None = None) -> None:
+        db.add(AuditLog(
+            event=event, user_id=user_id, application_id=application_id,
+            ip_address=request.client.host if request and request.client else None,
+            user_agent=request.headers.get("user-agent") if request else None,
+            details=details or {},
+        ))
+        await db.commit()

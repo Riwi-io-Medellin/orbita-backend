@@ -17,10 +17,10 @@ class User(Base):
         default=uuid.uuid4,
     )
 
-    microsoft_id: Mapped[uuid.UUID] = mapped_column(
+    microsoft_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         unique=True,
-        nullable=False,
+        nullable=True,
     )
 
     email: Mapped[str] = mapped_column(
@@ -45,6 +45,8 @@ class User(Base):
         default=False,
         nullable=False,
     )
+
+    password_hash: Mapped[str | None] = mapped_column(String(255))
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

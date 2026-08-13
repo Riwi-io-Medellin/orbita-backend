@@ -12,7 +12,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.modules.users.router import router as users_router
 from app.modules.auth.router import router as auth_router
 from app.modules.apps.router import router as apps_router
+from app.modules.access.router import router as applications_router
+from app.modules.access.service import AccessService
 from app.modules.auth.jwt import get_jwks
+from app.database.session import AsyncSessionLocal
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -25,6 +28,8 @@ def run_migrations() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await anyio.to_thread.run_sync(run_migrations)
+    async with AsyncSessionLocal() as db:
+        await AccessService.seed(db)
     yield
 
 
@@ -74,5 +79,10 @@ app.include_router(
 
 app.include_router(
     apps_router,
+    prefix="/api",
+)
+
+app.include_router(
+    applications_router,
     prefix="/api",
 )

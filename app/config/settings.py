@@ -7,6 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_name: str
     environment: str
+    port: int = 8000
 
     frontend_url: str
 

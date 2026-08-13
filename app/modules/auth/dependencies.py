@@ -27,10 +27,16 @@ async def get_current_user(
 
     payload = decode_access_token(token)
 
-    user = await UserService.get_user_by_id(
-        db,
-        UUID(payload["sub"]),
-    )
+    subject = payload.get("sub")
+    if subject is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
+
+    try:
+        user_id = UUID(subject)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token") from exc
+
+    user = await UserService.get_user_by_id(db, user_id)
 
     if user is None:
         raise HTTPException(

@@ -18,6 +18,8 @@ from app.database.session import get_db
 from app.modules.users.service import UserService
 
 from app.modules.apps.service import AppService, RoleService
+from app.modules.access.service import AccessService
+from app.modules.auth.passwords import hash_password, verify_password
 
 from app.modules.auth.jwt import (
     APP_TOKEN_EXPIRE_MINUTES,
@@ -29,6 +31,8 @@ from app.modules.auth.jwt import (
 from app.modules.auth.schemas import (
     IntrospectRequest,
     IntrospectResponse,
+    PasswordLoginRequest,
+    RegisterRequest,
     TokenExchangeRequest,
     TokenResponse,
 )
@@ -257,10 +261,16 @@ async def handle_microsoft_callback(
             url=f"{settings.frontend_url}/auth/callback?error=authentication_failed"
         )
 
+    await AccessService.ensure_default_role(db, user)
+    roles = await AccessService.role_names(db, user.id)
+
     access_token = create_access_token(
         user_id=str(user.id),
         email=user.email,
+        roles=roles,
     )
+
+    await AccessService.audit(db, event="login", user_id=user.id, request=request)
 
     pending = request.session.pop("pending_authorize", None)
 
@@ -290,13 +300,87 @@ async def handle_microsoft_callback(
     _set_access_token_cookie(response, access_token)
     return response
 
+@router.post("/login")
+async def password_login(
+    payload: PasswordLoginRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    user = await UserService.get_by_email(db, str(payload.email))
+
+    if user is None or not user.is_active or not verify_password(payload.password, user.password_hash):
+        await AccessService.audit(
+            db,
+            event="login.password_failed",
+            request=request,
+            details={"email": str(payload.email)},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password",
+        )
+
+    roles = await AccessService.role_names(db, user.id)
+    access_token = create_access_token(
+        user_id=str(user.id),
+        email=user.email,
+        roles=roles,
+    )
+
+    await AccessService.audit(db, event="login", user_id=user.id, request=request)
+
+    response = JSONResponse(content={"message": "Authenticated"})
+    _set_access_token_cookie(response, access_token)
+    return response
+
+# Not wired up yet - uncomment to enable local account self-registration.
+# @router.post("/register")
+async def register_user(
+    payload: RegisterRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    existing = await UserService.get_by_email(db, str(payload.email))
+
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already registered",
+        )
+
+    user = await UserService.create_local_user(
+        db,
+        email=str(payload.email),
+        full_name=payload.full_name,
+        password_hash=hash_password(payload.password),
+    )
+
+    await AccessService.ensure_default_role(db, user)
+    roles = await AccessService.role_names(db, user.id)
+
+    access_token = create_access_token(
+        user_id=str(user.id),
+        email=user.email,
+        roles=roles,
+    )
+
+    await AccessService.audit(db, event="register", user_id=user.id, request=request)
+
+    response = JSONResponse(content={"message": "Registered"})
+    _set_access_token_cookie(response, access_token)
+    return response
+
 @router.get("/me")
 async def get_current_user_profile(
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
+    roles = await AccessService.role_names(db, current_user.id)
     return {
         "id": str(current_user.id),
         "email": current_user.email,
         "name": current_user.full_name,
         "active": current_user.is_active,
+        "roles": roles,
+        "role": roles[0] if roles else None,
     }

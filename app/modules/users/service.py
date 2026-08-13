@@ -103,3 +103,41 @@ class UserService:
         result = await db.execute(query)
 
         return result.scalar_one_or_none()
+
+    @staticmethod
+    async def get_by_email(
+        db: AsyncSession,
+        email: str,
+    ) -> User | None:
+
+        query = select(User).where(
+            User.email == email.lower()
+        )
+
+        result = await db.execute(query)
+
+        return result.scalar_one_or_none()
+
+    # Creates a local (password-based) user, no Microsoft identity
+    @staticmethod
+    async def create_local_user(
+        db: AsyncSession,
+        email: str,
+        full_name: str,
+        password_hash: str,
+    ) -> User:
+
+        user = User(
+            microsoft_id=None,
+            email=email,
+            full_name=full_name,
+            password_hash=password_hash,
+        )
+
+        db.add(user)
+
+        await db.commit()
+
+        await db.refresh(user)
+
+        return user
