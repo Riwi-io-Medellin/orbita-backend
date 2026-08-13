@@ -1,4 +1,6 @@
-from sqlalchemy import select
+from datetime import datetime, timezone
+
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 
@@ -44,6 +46,87 @@ class UserService:
         await db.refresh(user)
 
         return user
+
+    # Lists users for the admin view
+    @staticmethod
+    async def list_users(
+        db: AsyncSession,
+        include_deleted: bool = False,
+    ) -> list[User]:
+
+        query = select(User)
+
+        if not include_deleted:
+            query = query.where(User.deleted_at.is_(None))
+
+        result = await db.execute(query.order_by(User.email))
+
+        return list(result.scalars().all())
+
+    # Enables/disables login for a user
+    @staticmethod
+    async def set_active_status(
+        db: AsyncSession,
+        user: User,
+        is_active: bool,
+    ) -> User:
+
+        user.is_active = is_active
+
+        await db.commit()
+        await db.refresh(user)
+
+        return user
+
+    # Soft-deletes a user: marks deleted_at and disables login
+    @staticmethod
+    async def soft_delete_user(
+        db: AsyncSession,
+        user: User,
+    ) -> User:
+
+        user.deleted_at = datetime.now(timezone.utc)
+        user.is_active = False
+
+        await db.commit()
+        await db.refresh(user)
+
+        return user
+
+    # Bulk enables/disables login for a set of users
+    @staticmethod
+    async def bulk_set_active_status(
+        db: AsyncSession,
+        user_ids: list[UUID],
+        is_active: bool,
+    ) -> list[User]:
+
+        await db.execute(
+            update(User).where(User.id.in_(user_ids)).values(is_active=is_active)
+        )
+        await db.commit()
+
+        result = await db.execute(select(User).where(User.id.in_(user_ids)))
+
+        return list(result.scalars().all())
+
+    # Bulk soft-deletes a set of users: marks deleted_at and disables login
+    @staticmethod
+    async def bulk_soft_delete(
+        db: AsyncSession,
+        user_ids: list[UUID],
+    ) -> list[User]:
+
+        await db.execute(
+            update(User)
+            .where(User.id.in_(user_ids))
+            .values(is_active=False, deleted_at=datetime.now(timezone.utc))
+        )
+        await db.commit()
+
+        result = await db.execute(select(User).where(User.id.in_(user_ids)))
+
+        return list(result.scalars().all())
 
     @staticmethod
     async def update_user(

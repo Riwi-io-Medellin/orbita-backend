@@ -36,7 +36,7 @@ class User(Base):
 
     is_active: Mapped[bool] = mapped_column(
         Boolean,
-        default=True,
+        default=False,
         nullable=False,
     )
 
@@ -47,6 +47,11 @@ class User(Base):
     )
 
     password_hash: Mapped[str | None] = mapped_column(String(255))
+
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

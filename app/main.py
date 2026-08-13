@@ -33,9 +33,53 @@ async def lifespan(app: FastAPI):
     yield
 
 
+OPENAPI_TAGS = [
+    {
+        "name": "Authentication",
+        "description": (
+            "Central login (Microsoft OAuth or local email/password), the central session cookie, "
+            "and the SSO handoff (`/authorize` + `/token`) other apps use to get a per-app JWT."
+        ),
+    },
+    {
+        "name": "Apps",
+        "description": (
+            "Platform-admin-only registry of external apps allowed to use Orbita SSO: OAuth client "
+            "credentials, redirect URIs, and each app's own roles (e.g. staff/coder/admin) with "
+            "per-user assignment."
+        ),
+    },
+    {
+        "name": "Applications",
+        "description": (
+            "The app launcher: which registered apps a user can see, gated by whether the user holds "
+            "a global role the app requires. Also exposes the platform-wide audit log."
+        ),
+    },
+    {
+        "name": "Users",
+        "description": (
+            "Platform-admin-only user management: activate/deactivate or soft-delete accounts (one at "
+            "a time or in bulk), and grant/revoke the global roles that unlock apps in the launcher."
+        ),
+    },
+    {
+        "name": "System",
+        "description": "Unauthenticated infrastructure endpoints (health check, JWKS for token verification).",
+    },
+]
+
 app = FastAPI(
     title="Orbita API",
     version="1.0.0",
+    description=(
+        "Orbita is Riwi's own backend **and** the central SSO identity provider for other Riwi apps. "
+        "Users authenticate here (Microsoft OAuth or local email/password) and get a central session "
+        "cookie for Orbita itself; other apps redirect here for a handoff and receive a short-lived, "
+        "role-bearing JWT scoped to that app. A `orbita_admin` (platform admin) manages who can log in, "
+        "which apps each user can see, and what role they hold inside each app."
+    ),
+    openapi_tags=OPENAPI_TAGS,
     lifespan=lifespan,
 )
 
@@ -54,16 +98,18 @@ app.add_middleware(
     secret_key=settings.jwt_secret,
 )
 
-@app.get("/api/health")
+@app.get("/api/health", tags=["System"], summary="Health check")
 def health_check():
+    """Liveness probe. Always returns 200 if the process is up; does not check the database."""
     return {
         "status": "ok",
         "service": "orbita-backend",
     }
 
 
-@app.get("/api/.well-known/jwks.json")
+@app.get("/api/.well-known/jwks.json", tags=["System"], summary="JSON Web Key Set")
 def jwks():
+    """Public RSA key(s) used to sign central and per-app JWTs, so other apps' backends can verify tokens locally without calling back to Orbita."""
     return get_jwks()
 
 

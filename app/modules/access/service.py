@@ -1,4 +1,6 @@
-from sqlalchemy import select
+from uuid import UUID
+
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,6 +45,99 @@ class AccessService:
             .order_by(Application.name)
         )
         return list(result)
+
+    @staticmethod
+    async def list_global_roles(db: AsyncSession) -> list[GlobalRole]:
+        result = await db.scalars(select(GlobalRole).order_by(GlobalRole.name))
+        return list(result)
+
+    @staticmethod
+    async def create_application(
+        db: AsyncSession,
+        slug: str,
+        name: str,
+        description: str,
+        url: str,
+        icon: str | None,
+    ) -> Application:
+
+        application = Application(slug=slug, name=name, description=description, url=url, icon=icon)
+
+        db.add(application)
+
+        await db.commit()
+        await db.refresh(application)
+
+        return application
+
+    @staticmethod
+    async def set_application_status(db: AsyncSession, application: Application, is_active: bool) -> Application:
+        application.is_active = is_active
+
+        await db.commit()
+        await db.refresh(application)
+
+        return application
+
+    @staticmethod
+    async def grant_application_role(db: AsyncSession, application_id: UUID, global_role_id: UUID) -> None:
+        await db.execute(
+            insert(application_global_roles)
+            .values(application_id=application_id, global_role_id=global_role_id)
+            .on_conflict_do_nothing()
+        )
+        await db.commit()
+
+    @staticmethod
+    async def revoke_application_role(db: AsyncSession, application_id: UUID, global_role_id: UUID) -> None:
+        await db.execute(
+            delete(application_global_roles).where(
+                application_global_roles.c.application_id == application_id,
+                application_global_roles.c.global_role_id == global_role_id,
+            )
+        )
+        await db.commit()
+
+    @staticmethod
+    async def assign_global_role(db: AsyncSession, user_id: UUID, global_role_id: UUID) -> None:
+        await db.execute(
+            insert(user_global_roles)
+            .values(user_id=user_id, global_role_id=global_role_id)
+            .on_conflict_do_nothing()
+        )
+        await db.commit()
+
+    @staticmethod
+    async def revoke_global_role(db: AsyncSession, user_id: UUID, global_role_id: UUID) -> None:
+        await db.execute(
+            delete(user_global_roles).where(
+                user_global_roles.c.user_id == user_id,
+                user_global_roles.c.global_role_id == global_role_id,
+            )
+        )
+        await db.commit()
+
+    @staticmethod
+    async def bulk_assign_global_role(db: AsyncSession, user_ids: list[UUID], global_role_id: UUID) -> None:
+        if not user_ids:
+            return
+
+        await db.execute(
+            insert(user_global_roles)
+            .values([{"user_id": user_id, "global_role_id": global_role_id} for user_id in user_ids])
+            .on_conflict_do_nothing()
+        )
+        await db.commit()
+
+    @staticmethod
+    async def bulk_revoke_global_role(db: AsyncSession, user_ids: list[UUID], global_role_id: UUID) -> None:
+        await db.execute(
+            delete(user_global_roles).where(
+                user_global_roles.c.user_id.in_(user_ids),
+                user_global_roles.c.global_role_id == global_role_id,
+            )
+        )
+        await db.commit()
 
     @staticmethod
     async def audit(db: AsyncSession, *, event: str, user_id=None, request=None, application_id=None, details: dict | None = None) -> None:

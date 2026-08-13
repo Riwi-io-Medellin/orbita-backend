@@ -3,10 +3,11 @@ import hmac
 import secrets
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.apps.models import App, AppRedirectURI, Role, UserAppRole
+from app.modules.users.models import User
 
 _PBKDF2_ITERATIONS = 260_000
 
@@ -99,6 +100,20 @@ class AppService:
         await db.refresh(entry)
 
         return entry
+
+    @staticmethod
+    async def set_active_status(
+        db: AsyncSession,
+        app: App,
+        is_active: bool,
+    ) -> App:
+
+        app.is_active = is_active
+
+        await db.commit()
+        await db.refresh(app)
+
+        return app
 
     @staticmethod
     async def validate_redirect_uri(
@@ -224,3 +239,44 @@ class RoleService:
         result = await db.execute(query)
 
         return list(result.scalars().all())
+
+    @staticmethod
+    async def delete_role(db: AsyncSession, role: Role) -> None:
+        await db.execute(delete(UserAppRole).where(UserAppRole.role_id == role.id))
+        await db.delete(role)
+        await db.commit()
+
+    @staticmethod
+    async def unassign_role_from_user(
+        db: AsyncSession,
+        user_id: UUID,
+        app: App,
+        role: Role,
+    ) -> None:
+
+        await db.execute(
+            delete(UserAppRole).where(
+                UserAppRole.user_id == user_id,
+                UserAppRole.app_id == app.id,
+                UserAppRole.role_id == role.id,
+            )
+        )
+        await db.commit()
+
+    @staticmethod
+    async def list_user_roles_for_app(
+        db: AsyncSession,
+        app: App,
+    ) -> list[tuple[UUID, str, str, str]]:
+
+        query = (
+            select(User.id, User.email, User.full_name, Role.name)
+            .join(UserAppRole, UserAppRole.user_id == User.id)
+            .join(Role, Role.id == UserAppRole.role_id)
+            .where(UserAppRole.app_id == app.id)
+            .order_by(User.email, Role.name)
+        )
+
+        result = await db.execute(query)
+
+        return list(result.all())

@@ -44,6 +44,8 @@ from app.modules.auth.service import (
 
 from fastapi.responses import RedirectResponse, JSONResponse
 
+from app.schemas import ErrorDetail
+
 router = APIRouter(
     prefix="/auth",
     tags=["Authentication"],
@@ -90,14 +92,27 @@ async def _get_optional_current_user(
     return user
 
 
-@router.get("/login")
+@router.get(
+    "/login",
+    summary="Start central login via Microsoft",
+    responses={302: {"description": "Redirect to Microsoft's OAuth consent screen."}},
+)
 async def redirect_to_microsoft_login(request: Request):
+    """Kicks off the central (Orbita's own) Microsoft OAuth login flow. On success, Microsoft redirects back to `GET /auth/callback`."""
     return await oauth.microsoft.authorize_redirect(
         request,
         settings.microsoft_redirect_uri,
     )
 
-@router.get("/authorize")
+@router.get(
+    "/authorize",
+    summary="Start an SSO handoff for another app",
+    responses={
+        302: {"description": "Redirect either to Microsoft login (no session yet) or to the app's redirect_uri with a one-time code."},
+        400: {"model": ErrorDetail, "description": "Unknown/inactive app, or redirect_uri not registered for it."},
+        403: {"model": ErrorDetail, "description": "User has no role assigned for this app."},
+    },
+)
 async def start_sso_authorization(
     request: Request,
     client_id: str,
@@ -105,6 +120,12 @@ async def start_sso_authorization(
     state: str,
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Entry point another app's frontend redirects to for SSO. If the browser has no valid Orbita
+    session cookie yet, stashes the request and sends the user through Microsoft login first (resumed
+    automatically by `/auth/callback`). Otherwise validates client_id/redirect_uri against the apps
+    registry, checks the user has a role for that app, and redirects back with a 60-second one-time code.
+    """
     user = await _get_optional_current_user(request, db)
 
     if user is None:
@@ -120,11 +141,25 @@ async def start_sso_authorization(
 
     return await build_authorize_redirect(db, user, client_id, redirect_uri, state)
 
-@router.post("/token", response_model=TokenResponse)
+@router.post(
+    "/token",
+    response_model=TokenResponse,
+    summary="Exchange an SSO code for a per-app JWT",
+    responses={
+        400: {"model": ErrorDetail, "description": "Code is invalid, expired, already used, or the user is no longer available."},
+        401: {"model": ErrorDetail, "description": "Invalid client_id/client_secret."},
+        403: {"model": ErrorDetail, "description": "User has no role assigned for this app."},
+    },
+)
 async def exchange_code_for_app_token(
     payload: TokenExchangeRequest,
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Called by another app's *backend* (not the browser), authenticated with its client_id/client_secret,
+    to redeem the one-time code from `/auth/authorize` for a short-lived (30 min) RS256 JWT carrying
+    that user's role(s) for this specific app. Also records the session so it can later be revoked.
+    """
     app = await AppService.get_by_client_id(db, payload.client_id)
 
     if app is None or not AppService.verify_client_secret(app, payload.client_secret):
@@ -173,11 +208,23 @@ async def exchange_code_for_app_token(
         expires_in=60 * APP_TOKEN_EXPIRE_MINUTES,
     )
 
-@router.post("/introspect", response_model=IntrospectResponse)
+@router.post(
+    "/introspect",
+    response_model=IntrospectResponse,
+    summary="Check whether a per-app JWT is still active",
+    responses={
+        401: {"model": ErrorDetail, "description": "Invalid client_id/client_secret."},
+    },
+)
 async def introspect_app_token(
     payload: IntrospectRequest,
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Opt-in check for apps that want revocation to take effect before a token's natural 30-minute expiry
+    (e.g. right after logout). Returns `active: false` (200, not an error) for a token whose signature is
+    valid but whose session was revoked or has expired, since per-app tokens are stateless JWTs otherwise.
+    """
     app = await AppService.get_by_client_id(db, payload.client_id)
 
     if app is None or not AppService.verify_client_secret(app, payload.client_secret):
@@ -205,11 +252,20 @@ async def introspect_app_token(
         exp=claims.get("exp"),
     )
 
-@router.post("/logout")
+@router.post(
+    "/logout",
+    summary="Log out and revoke all per-app sessions",
+)
 async def logout_and_revoke_sessions(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Clears the central session cookie and revokes every `app_sessions` row for this user, so any app that
+    calls `POST /auth/introspect` will immediately see their token as inactive. Apps that never call
+    introspect keep honoring their already-issued token until its natural 30-minute expiry (by design).
+    Safe to call with no session — always returns 200.
+    """
     user = await _get_optional_current_user(request, db)
 
     if user is not None:
@@ -230,11 +286,24 @@ async def logout_and_revoke_sessions(
 
     return response
 
-@router.get("/callback", name="handle_microsoft_callback")
+@router.get(
+    "/callback",
+    name="handle_microsoft_callback",
+    summary="Microsoft OAuth callback",
+    responses={
+        302: {"description": "Redirect to the frontend (or, if resuming an SSO handoff, to the other app's redirect_uri) with the session cookie set."},
+    },
+)
 async def handle_microsoft_callback(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Where Microsoft redirects back to after login. Creates or updates the local user record, issues the
+    central session cookie (regardless of the user's `is_active` flag — that's enforced on every later
+    authenticated call, not here), and resumes a pending SSO handoff if one was stashed by `/auth/authorize`.
+    Never raises to the caller: on any OAuth/upsert failure it redirects to the frontend with `?error=...`.
+    """
     try:
         token = await oauth.microsoft.authorize_access_token(
             request,
@@ -300,15 +369,26 @@ async def handle_microsoft_callback(
     _set_access_token_cookie(response, access_token)
     return response
 
-@router.post("/login")
+@router.post(
+    "/login",
+    summary="Central login via email/password",
+    responses={
+        401: {"model": ErrorDetail, "description": "Unknown email or wrong password."},
+    },
+)
 async def password_login(
     payload: PasswordLoginRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Local-account login for users with a `password_hash` set. Issues the central session cookie on any
+    valid credentials, regardless of `is_active` — an inactive account still logs in successfully here,
+    but every subsequent authenticated call will 403 until an `orbita_admin` activates it.
+    """
     user = await UserService.get_by_email(db, str(payload.email))
 
-    if user is None or not user.is_active or not verify_password(payload.password, user.password_hash):
+    if user is None or not verify_password(payload.password, user.password_hash):
         await AccessService.audit(
             db,
             event="login.password_failed",
@@ -340,6 +420,11 @@ async def register_user(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Local self-registration by email/password. Disabled (decorator commented out) — deliberately not
+    exposed yet. New accounts created this way would default to `is_active=False`, same as any other
+    new user, requiring an `orbita_admin` to activate them before they can do anything.
+    """
     existing = await UserService.get_by_email(db, str(payload.email))
 
     if existing is not None:
@@ -370,11 +455,19 @@ async def register_user(
     _set_access_token_cookie(response, access_token)
     return response
 
-@router.get("/me")
+@router.get(
+    "/me",
+    summary="Get the current user's profile",
+    responses={
+        401: {"model": ErrorDetail, "description": "No/invalid session cookie."},
+        403: {"model": ErrorDetail, "description": "User is inactive."},
+    },
+)
 async def get_current_user_profile(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """Returns the caller's identity plus their global roles (not per-app roles), read from the central session cookie."""
     roles = await AccessService.role_names(db, current_user.id)
     return {
         "id": str(current_user.id),
