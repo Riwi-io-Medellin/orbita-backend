@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Request
+from urllib.parse import urlparse
+
+from fastapi import APIRouter, Query, Request
 
 from app.config.settings import settings
 
@@ -42,12 +44,36 @@ def authenticated_response(access_token: str) -> JSONResponse:
     return response
 
 
+def valid_sso_continuation(value: str | None, request: Request) -> str | None:
+    if not value:
+        return None
+    target = urlparse(value)
+    if (
+        target.scheme in {"http", "https"}
+        and target.netloc == request.url.netloc
+        and target.path == "/api/sso/authorize"
+    ):
+        return value
+    return None
+
+
 @router.get("/login")
-async def login(request: Request):
-    return await oauth.microsoft.authorize_redirect(
+async def login(request: Request, continue_url: str | None = Query(default=None, alias="continue")):
+    response = await oauth.microsoft.authorize_redirect(
         request,
         settings.microsoft_redirect_uri,
     )
+    continuation = valid_sso_continuation(continue_url, request)
+    if continuation:
+        response.set_cookie(
+            key="sso_continue",
+            value=continuation,
+            httponly=True,
+            **session_cookie_options(),
+            path="/",
+            max_age=10 * 60,
+        )
+    return response
 
 @router.post("/logout")
 async def logout():
@@ -108,8 +134,9 @@ async def auth_callback(
 
     await AccessService.audit(db, event="login", user_id=user.id, request=request)
 
+    continuation = valid_sso_continuation(request.cookies.get("sso_continue"), request)
     response = RedirectResponse(
-        url=f"{settings.frontend_url}/auth/callback",
+        url=continuation or f"{settings.frontend_url}/auth/callback",
         status_code=302,
     )
 
@@ -121,6 +148,7 @@ async def auth_callback(
         path="/",
         max_age=60 * settings.jwt_expire_minutes,
     )
+    response.delete_cookie(key="sso_continue", httponly=True, **session_cookie_options(), path="/")
     return response
 
 

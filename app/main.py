@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.modules.users.router import router as users_router
 from app.modules.auth.router import router as auth_router
 from app.modules.access.router import router as applications_router
+from app.modules.sso.router import router as sso_router
 from app.modules.access.service import AccessService
 from app.database.session import AsyncSessionLocal
 
@@ -71,3 +72,4 @@ app.include_router(
 )
 
 app.include_router(applications_router, prefix="/api")
+app.include_router(sso_router, prefix="/api")

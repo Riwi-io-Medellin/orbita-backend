@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     jwt_algorithm: str
     jwt_expire_minutes: int
 
+    sso_code_expire_seconds: int = 60
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

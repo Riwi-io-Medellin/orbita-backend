@@ -1,8 +1,15 @@
-from sqlalchemy import select
+from sqlalchemy import select, union
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.access.models import Application, AuditLog, Role, application_roles, user_roles
+from app.modules.access.models import (
+    Application,
+    AuditLog,
+    Role,
+    application_roles,
+    user_application_access_roles,
+    user_roles,
+)
 from app.modules.users.models import User
 
 DEFAULT_ROLE = "coder"
@@ -35,11 +42,28 @@ class AccessService:
 
     @staticmethod
     async def authorized_applications(db: AsyncSession, user_id) -> list[Application]:
+        """Return applications authorized by either the legacy or scoped model.
+
+        Existing catalog entries keep working while they are progressively
+        migrated to application-scoped roles for SSO.
+        """
+        legacy_application_ids = (
+            select(application_roles.c.application_id)
+            .join(user_roles, user_roles.c.role_id == application_roles.c.role_id)
+            .where(user_roles.c.user_id == user_id)
+        )
+        scoped_application_ids = (
+            select(user_application_access_roles.c.application_id)
+            .where(user_application_access_roles.c.user_id == user_id)
+        )
+        authorized_application_ids = union(
+            legacy_application_ids,
+            scoped_application_ids,
+        ).subquery()
         result = await db.scalars(
             select(Application).distinct()
-            .join(application_roles, application_roles.c.application_id == Application.id)
-            .join(user_roles, user_roles.c.role_id == application_roles.c.role_id)
-            .where(user_roles.c.user_id == user_id, Application.is_active.is_(True))
+            .join(authorized_application_ids, authorized_application_ids.c.application_id == Application.id)
+            .where(Application.is_active.is_(True))
             .order_by(Application.name)
         )
         return list(result)
