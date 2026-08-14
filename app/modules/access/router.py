@@ -75,8 +75,9 @@ async def create_application(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Creates the launcher entry (name/description/url/icon) shown to users who have access — distinct from
-    `POST /apps` (SSO/OAuth client registration). New apps start with zero users able to see them until an
+    Creates a launcher-only entry for systems that do not use SSO. For an integrated application, use
+    `POST /apps`, which creates the launcher tile and SSO client together. New launcher-only apps start
+    with zero users able to see them until an
     admin grants a global role via `POST /applications/{id}/roles/{role_id}`.
     """
     existing = await db.scalar(select(Application).where(Application.slug == payload.slug))

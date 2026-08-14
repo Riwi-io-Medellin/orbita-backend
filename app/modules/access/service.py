@@ -1,11 +1,12 @@
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, union
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.access.models import Application, AuditLog, GlobalRole, application_global_roles, user_global_roles
 from app.modules.users.models import User
+from app.modules.apps.models import App, UserAppRole
 
 DEFAULT_ROLE = "coder"
 
@@ -18,6 +19,32 @@ class AccessService:
             {"name": "staff", "description": "Personal interno de Riwi"},
             {"name": DEFAULT_ROLE, "description": "Coders de Riwi"},
         ]).on_conflict_do_nothing(index_elements=["name"]))
+        await db.commit()
+
+    @staticmethod
+    async def bootstrap_platform_admins(db: AsyncSession, emails: list[str]) -> None:
+        normalized = sorted({email.strip().lower() for email in emails if email.strip()})
+        if not normalized:
+            return
+
+        users = list(await db.scalars(select(User).where(func.lower(User.email).in_(normalized))))
+        if not users:
+            return
+
+        admin_role_id = await db.scalar(select(GlobalRole.id).where(GlobalRole.name == "admin"))
+        for user in users:
+            user.is_platform_admin = True
+            user.is_active = True
+
+        if admin_role_id is not None:
+            await db.execute(
+                insert(user_global_roles)
+                .values([
+                    {"user_id": user.id, "global_role_id": admin_role_id}
+                    for user in users
+                ])
+                .on_conflict_do_nothing()
+            )
         await db.commit()
 
     @staticmethod
@@ -37,11 +64,26 @@ class AccessService:
 
     @staticmethod
     async def authorized_applications(db: AsyncSession, user_id) -> list[Application]:
-        result = await db.scalars(
-            select(Application).distinct()
+        legacy_ids = (
+            select(Application.id)
             .join(application_global_roles, application_global_roles.c.application_id == Application.id)
             .join(user_global_roles, user_global_roles.c.global_role_id == application_global_roles.c.global_role_id)
             .where(user_global_roles.c.user_id == user_id, Application.is_active.is_(True))
+        )
+        app_role_ids = (
+            select(Application.id)
+            .join(App, App.application_id == Application.id)
+            .join(UserAppRole, UserAppRole.app_id == App.id)
+            .where(
+                UserAppRole.user_id == user_id,
+                Application.is_active.is_(True),
+                App.is_active.is_(True),
+            )
+        )
+        authorized_ids = union(legacy_ids, app_role_ids).subquery()
+        result = await db.scalars(
+            select(Application)
+            .join(authorized_ids, authorized_ids.c.id == Application.id)
             .order_by(Application.name)
         )
         return list(result)
@@ -73,6 +115,10 @@ class AccessService:
     @staticmethod
     async def set_application_status(db: AsyncSession, application: Application, is_active: bool) -> Application:
         application.is_active = is_active
+
+        linked_app = await db.scalar(select(App).where(App.application_id == application.id))
+        if linked_app is not None:
+            linked_app.is_active = is_active
 
         await db.commit()
         await db.refresh(application)

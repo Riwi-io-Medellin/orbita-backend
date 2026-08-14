@@ -37,6 +37,7 @@ def create_access_token(
 def create_app_token(
     user_id: str,
     email: str,
+    name: str,
     client_id: str,
     roles: list[str],
 ) -> tuple[str, str, datetime]:
@@ -49,6 +50,7 @@ def create_app_token(
     payload = {
         "sub": user_id,
         "email": email,
+        "name": name,
         "aud": client_id,
         "roles": roles,
         "jti": jti,

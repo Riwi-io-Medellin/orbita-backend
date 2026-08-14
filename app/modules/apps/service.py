@@ -7,6 +7,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.apps.models import App, AppRedirectURI, Role, UserAppRole
+from app.modules.access.models import Application
 from app.modules.users.models import User
 
 _PBKDF2_ITERATIONS = 260_000
@@ -57,15 +58,37 @@ class AppService:
         return list(result.scalars().all())
 
     @staticmethod
+    async def get_catalog_application_by_slug(
+        db: AsyncSession,
+        slug: str,
+    ) -> Application | None:
+        return await db.scalar(select(Application).where(Application.slug == slug))
+
+    @staticmethod
     async def create_app(
         db: AsyncSession,
         client_id: str,
+        slug: str,
         name: str,
+        description: str,
+        url: str,
+        icon: str | None,
     ) -> tuple[App, str]:
 
         raw_secret = secrets.token_urlsafe(32)
 
+        application = Application(
+            slug=slug,
+            name=name,
+            description=description,
+            url=url,
+            icon=icon,
+        )
+        db.add(application)
+        await db.flush()
+
         app = App(
+            application_id=application.id,
             client_id=client_id,
             name=name,
             client_secret_hash=_hash_secret(raw_secret),
@@ -109,6 +132,11 @@ class AppService:
     ) -> App:
 
         app.is_active = is_active
+
+        if app.application_id is not None:
+            application = await db.get(Application, app.application_id)
+            if application is not None:
+                application.is_active = is_active
 
         await db.commit()
         await db.refresh(app)

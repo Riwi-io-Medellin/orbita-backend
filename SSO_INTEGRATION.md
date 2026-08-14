@@ -1,6 +1,6 @@
 # Integrating your app with Orbita SSO
 
-Orbita Backend is the central identity provider for all Riwi apps. Users log in once via Microsoft through Orbita, and your app's backend receives a signed token proving who they are and what role they hold in *your* app specifically.
+Orbita Backend is the central identity provider for all Riwi apps. Users log in once with an Orbita local account or Microsoft, and your app's backend receives a signed token proving who they are and what role they hold in *your* app specifically.
 
 ## 1. Get registered
 
@@ -8,6 +8,7 @@ Ask an Orbita platform admin to register your app (this cannot be self-served ye
 
 - A `client_id` (a slug, e.g. `my-app`)
 - A `client_secret` (shown once at creation time — store it securely, e.g. as a server-side env var)
+- The launcher tile (`slug`, name, description, icon and launch URL), created together with the SSO client
 - One or more allow-listed `redirect_uri`s (one per environment: dev/staging/prod)
 - The roles your app needs, and which users get which role
 
@@ -25,7 +26,7 @@ GET https://<orbita-host>/api/auth/authorize
 ```
 
 - If the user already has an Orbita session, they're bounced straight back — no extra prompt.
-- Otherwise they see the Microsoft login page first.
+- Otherwise they see Orbita's login page and may use their local password or Microsoft.
 - Either way, if they're provisioned for your app, they land on your `redirect_uri` with `?code=...&state=...`.
 - `redirect_uri` must match one of your registered URIs **exactly**, or the request is rejected (`400`) — this is what stops an unregistered site from hijacking the flow.
 
@@ -76,6 +77,7 @@ Decoded payload:
 {
   "sub": "<Orbita user id>",
   "email": "user@example.com",
+  "name": "User name",
   "aud": "your-app-client-id",
   "roles": ["admin"],
   "jti": "<unique token id>",
@@ -121,3 +123,26 @@ You can only introspect your own app's tokens — a token issued with `aud` for 
 
 - Token lifetimes and the authorization-code TTL are currently fixed in code (30 min / 60 sec) — ask if you need them tuned.
 - `/introspect` is opt-in — call it only where instant revocation actually matters to you. It's not required for every request.
+
+## Orbita production variables
+
+In addition to the existing database and Microsoft OAuth variables, Railway must define:
+
+```env
+ENVIRONMENT=production
+FRONTEND_URL=https://<orbita-frontend>
+MICROSOFT_REDIRECT_URI=https://<orbita-backend>/api/auth/callback
+
+JWT_SECRET=<independent random secret for the server-side pending-login session>
+JWT_ALGORITHM=RS256
+JWT_EXPIRE_MINUTES=60
+JWT_KID=orbita-prod-2026-08
+JWT_PRIVATE_KEY=<PEM RSA private key>
+JWT_PUBLIC_KEY=<PEM RSA public key>
+
+PLATFORM_ADMIN_EMAILS=admin1@example.com,admin2@example.com
+```
+
+Keep `JWT_KID` stable while the key pair is unchanged. The private key must only exist in the Orbita backend; client applications use the public JWKS endpoint. `PLATFORM_ADMIN_EMAILS` bootstraps the first administrators and may be narrowed after normal administration is established.
+
+Orbita runs Alembic migrations automatically during backend startup. Deploy the backend before registering SSO clients, then deploy each client app with its generated secret.

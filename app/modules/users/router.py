@@ -107,8 +107,7 @@ async def update_user_status(
 ):
     """
     Sets `is_active`. New users (self-registered or via Microsoft) start inactive by default — this is
-    how an `orbita_admin` turns on access. Setting it false immediately blocks every authenticated call
-    the user makes (they can still complete login itself, but every subsequent call 403s).
+    how a platform admin turns on access. Setting it false blocks login and every authenticated call.
     """
     user = await UserService.get_user_by_id(db, user_id)
 

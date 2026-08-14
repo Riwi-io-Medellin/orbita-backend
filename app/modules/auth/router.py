@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 
 from app.config.settings import settings
 
@@ -108,7 +108,7 @@ async def redirect_to_microsoft_login(request: Request):
     "/authorize",
     summary="Start an SSO handoff for another app",
     responses={
-        302: {"description": "Redirect either to Microsoft login (no session yet) or to the app's redirect_uri with a one-time code."},
+        302: {"description": "Redirect either to Orbita login (no session yet) or to the app's redirect_uri with a one-time code."},
         400: {"model": ErrorDetail, "description": "Unknown/inactive app, or redirect_uri not registered for it."},
         403: {"model": ErrorDetail, "description": "User has no role assigned for this app."},
     },
@@ -117,15 +117,27 @@ async def start_sso_authorization(
     request: Request,
     client_id: str,
     redirect_uri: str,
-    state: str,
+    state: str = Query(min_length=16, max_length=512),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Entry point another app's frontend redirects to for SSO. If the browser has no valid Orbita
-    session cookie yet, stashes the request and sends the user through Microsoft login first (resumed
-    automatically by `/auth/callback`). Otherwise validates client_id/redirect_uri against the apps
+    session cookie yet, stashes the request and sends the user to Orbita login, where either a local
+    password or Microsoft can be used. Otherwise validates client_id/redirect_uri against the apps
     registry, checks the user has a role for that app, and redirects back with a 60-second one-time code.
     """
+    app = await AppService.get_by_client_id(db, client_id)
+    if app is None or not app.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unknown or inactive app",
+        )
+    if not await AppService.validate_redirect_uri(db, app, redirect_uri):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="redirect_uri is not registered for this app",
+        )
+
     user = await _get_optional_current_user(request, db)
 
     if user is None:
@@ -134,12 +146,51 @@ async def start_sso_authorization(
             "redirect_uri": redirect_uri,
             "state": state,
         }
-        return await oauth.microsoft.authorize_redirect(
-            request,
-            settings.microsoft_redirect_uri,
+        return RedirectResponse(
+            url=f"{settings.frontend_url}/auth?continue=sso",
+            status_code=302,
         )
 
     return await build_authorize_redirect(db, user, client_id, redirect_uri, state)
+
+
+@router.get(
+    "/resume",
+    summary="Resume an SSO handoff after central login",
+    responses={302: {"description": "Redirect to the requesting app with a one-time code."}},
+)
+async def resume_sso_authorization(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    pending = request.session.get("pending_authorize")
+    if pending is None:
+        return RedirectResponse(
+            url=f"{settings.frontend_url}/auth?error=sso_session_missing",
+            status_code=302,
+        )
+
+    user = await _get_optional_current_user(request, db)
+    if user is None:
+        return RedirectResponse(
+            url=f"{settings.frontend_url}/auth?continue=sso",
+            status_code=302,
+        )
+
+    request.session.pop("pending_authorize", None)
+    try:
+        return await build_authorize_redirect(
+            db,
+            user,
+            pending["client_id"],
+            pending["redirect_uri"],
+            pending["state"],
+        )
+    except (HTTPException, KeyError):
+        return RedirectResponse(
+            url=f"{settings.frontend_url}/auth?error=sso_access_denied",
+            status_code=302,
+        )
 
 @router.post(
     "/token",
@@ -197,6 +248,7 @@ async def exchange_code_for_app_token(
     access_token, jti, expires_at = create_app_token(
         user_id=str(user.id),
         email=user.email,
+        name=user.full_name,
         client_id=app.client_id,
         roles=roles,
     )
@@ -299,9 +351,9 @@ async def handle_microsoft_callback(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Where Microsoft redirects back to after login. Creates or updates the local user record, issues the
-    central session cookie (regardless of the user's `is_active` flag — that's enforced on every later
-    authenticated call, not here), and resumes a pending SSO handoff if one was stashed by `/auth/authorize`.
+    Where Microsoft redirects back to after login. Creates or updates the local user record, rejects
+    inactive accounts, issues the central session cookie, and resumes a pending SSO handoff if one was
+    stashed by `/auth/authorize`.
     Never raises to the caller: on any OAuth/upsert failure it redirects to the frontend with `?error=...`.
     """
     try:
@@ -330,6 +382,17 @@ async def handle_microsoft_callback(
             url=f"{settings.frontend_url}/auth/callback?error=authentication_failed"
         )
 
+    await AccessService.bootstrap_platform_admins(
+        db,
+        settings.platform_admin_emails.split(","),
+    )
+
+    if not user.is_active:
+        await AccessService.audit(db, event="login.inactive", user_id=user.id, request=request)
+        return RedirectResponse(
+            url=f"{settings.frontend_url}/auth/callback?error=user_inactive"
+        )
+
     await AccessService.ensure_default_role(db, user)
     roles = await AccessService.role_names(db, user.id)
 
@@ -352,12 +415,9 @@ async def handle_microsoft_callback(
                 pending["redirect_uri"],
                 pending["state"],
             )
-        except HTTPException:
+        except (HTTPException, KeyError):
             response = RedirectResponse(
-                url=(
-                    f"{pending['redirect_uri']}"
-                    f"?error=access_denied&state={pending['state']}"
-                ),
+                url=f"{settings.frontend_url}/auth/callback?error=sso_access_denied",
                 status_code=302,
             )
     else:
@@ -374,6 +434,7 @@ async def handle_microsoft_callback(
     summary="Central login via email/password",
     responses={
         401: {"model": ErrorDetail, "description": "Unknown email or wrong password."},
+        403: {"model": ErrorDetail, "description": "The account is inactive."},
     },
 )
 async def password_login(
@@ -382,9 +443,8 @@ async def password_login(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Local-account login for users with a `password_hash` set. Issues the central session cookie on any
-    valid credentials, regardless of `is_active` — an inactive account still logs in successfully here,
-    but every subsequent authenticated call will 403 until an `orbita_admin` activates it.
+    Local-account login for users with a `password_hash` set. Valid credentials only receive a central
+    session cookie when the account is active.
     """
     user = await UserService.get_by_email(db, str(payload.email))
 
@@ -398,6 +458,18 @@ async def password_login(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
+        )
+
+    if not user.is_active:
+        await AccessService.audit(
+            db,
+            event="login.inactive",
+            user_id=user.id,
+            request=request,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User is inactive",
         )
 
     roles = await AccessService.role_names(db, user.id)
@@ -474,6 +546,7 @@ async def get_current_user_profile(
         "email": current_user.email,
         "name": current_user.full_name,
         "active": current_user.is_active,
+        "is_platform_admin": current_user.is_platform_admin,
         "roles": roles,
         "role": roles[0] if roles else None,
     }

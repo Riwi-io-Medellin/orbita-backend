@@ -1,3 +1,4 @@
+import hashlib
 import secrets
 from datetime import datetime, timedelta, UTC
 from urllib.parse import urlencode
@@ -16,6 +17,10 @@ from app.modules.users.models import User
 AUTHORIZATION_CODE_TTL_SECONDS = 60
 
 
+def _hash_authorization_code(code: str) -> str:
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()
+
+
 class AuthorizationCodeService:
 
     @staticmethod
@@ -32,7 +37,7 @@ class AuthorizationCodeService:
         )
 
         entry = AuthorizationCode(
-            code=code,
+            code_hash=_hash_authorization_code(code),
             user_id=user.id,
             app_id=app.id,
             redirect_uri=redirect_uri,
@@ -57,7 +62,7 @@ class AuthorizationCodeService:
         stmt = (
             update(AuthorizationCode)
             .where(
-                AuthorizationCode.code == code,
+                AuthorizationCode.code_hash == _hash_authorization_code(code),
                 AuthorizationCode.app_id == app.id,
                 AuthorizationCode.redirect_uri == redirect_uri,
                 AuthorizationCode.used_at.is_(None),

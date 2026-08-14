@@ -35,6 +35,15 @@ class Settings(BaseSettings):
     jwt_public_key: str
     jwt_kid: str
 
+    platform_admin_emails: str = ""
+
+    @field_validator("jwt_algorithm")
+    @classmethod
+    def require_rs256(cls, value: str) -> str:
+        if value.upper() != "RS256":
+            raise ValueError("JWT_ALGORITHM must be RS256")
+        return "RS256"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

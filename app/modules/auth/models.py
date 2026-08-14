@@ -17,7 +17,7 @@ class AuthorizationCode(Base):
         default=uuid.uuid4,
     )
 
-    code: Mapped[str] = mapped_column(
+    code_hash: Mapped[str] = mapped_column(
         String(255),
         unique=True,
         nullable=False,

@@ -17,6 +17,13 @@ class App(Base):
         default=uuid.uuid4,
     )
 
+    application_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("applications.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=True,
+    )
+
     client_id: Mapped[str] = mapped_column(
         String(255),
         unique=True,

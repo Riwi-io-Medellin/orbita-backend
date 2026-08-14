@@ -30,6 +30,10 @@ async def lifespan(app: FastAPI):
     await anyio.to_thread.run_sync(run_migrations)
     async with AsyncSessionLocal() as db:
         await AccessService.seed(db)
+        await AccessService.bootstrap_platform_admins(
+            db,
+            settings.platform_admin_emails.split(","),
+        )
     yield
 
 
@@ -76,7 +80,7 @@ app = FastAPI(
         "Orbita is Riwi's own backend **and** the central SSO identity provider for other Riwi apps. "
         "Users authenticate here (Microsoft OAuth or local email/password) and get a central session "
         "cookie for Orbita itself; other apps redirect here for a handoff and receive a short-lived, "
-        "role-bearing JWT scoped to that app. A `orbita_admin` (platform admin) manages who can log in, "
+        "role-bearing JWT scoped to that app. A platform admin manages who can log in, "
         "which apps each user can see, and what role they hold inside each app."
     ),
     openapi_tags=OPENAPI_TAGS,
@@ -96,6 +100,8 @@ app.add_middleware(
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.jwt_secret,
+    same_site="none" if settings.environment == "production" else "lax",
+    https_only=settings.environment == "production",
 )
 
 @app.get("/api/health", tags=["System"], summary="Health check")

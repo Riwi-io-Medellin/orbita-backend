@@ -51,14 +51,26 @@ async def create_app(
             detail="client_id already registered",
         )
 
+    existing_application = await AppService.get_catalog_application_by_slug(db, payload.slug)
+    if existing_application is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="slug already registered",
+        )
+
     app, raw_secret = await AppService.create_app(
         db,
         client_id=payload.client_id,
+        slug=payload.slug,
         name=payload.name,
+        description=payload.description,
+        url=payload.url,
+        icon=payload.icon,
     )
 
     return AppCreated(
         id=app.id,
+        application_id=app.application_id,
         client_id=app.client_id,
         name=app.name,
         is_active=app.is_active,
