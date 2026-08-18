@@ -7,6 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_name: str
     environment: str
+    port: int = 8000
 
     frontend_url: str
 
@@ -29,6 +30,19 @@ class Settings(BaseSettings):
     jwt_secret: str
     jwt_algorithm: str
     jwt_expire_minutes: int
+
+    jwt_private_key: str
+    jwt_public_key: str
+    jwt_kid: str
+
+    platform_admin_emails: str = ""
+
+    @field_validator("jwt_algorithm")
+    @classmethod
+    def require_rs256(cls, value: str) -> str:
+        if value.upper() != "RS256":
+            raise ValueError("JWT_ALGORITHM must be RS256")
+        return "RS256"
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Request
+from uuid import UUID
+
+from fastapi import APIRouter, HTTPException, Query, Request, status
 
 from app.config.settings import settings
 
@@ -15,25 +17,311 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.session import get_db
 from app.modules.users.service import UserService
 
-from app.modules.auth.jwt import create_access_token
+from app.modules.apps.service import AppService, RoleService
+from app.modules.access.service import AccessService
+from app.modules.auth.passwords import hash_password, verify_password
+
+from app.modules.auth.jwt import (
+    APP_TOKEN_EXPIRE_MINUTES,
+    create_access_token,
+    create_app_token,
+    decode_access_token,
+    decode_app_token,
+)
+from app.modules.auth.schemas import (
+    IntrospectRequest,
+    IntrospectResponse,
+    PasswordLoginRequest,
+    RegisterRequest,
+    TokenExchangeRequest,
+    TokenResponse,
+)
+from app.modules.auth.service import (
+    AppSessionService,
+    AuthorizationCodeService,
+    build_authorize_redirect,
+)
 
 from fastapi.responses import RedirectResponse, JSONResponse
+
+from app.schemas import ErrorDetail
 
 router = APIRouter(
     prefix="/auth",
     tags=["Authentication"],
 )
 
+_IS_PRODUCTION = settings.environment == "production"
+_COOKIE_SECURE = _IS_PRODUCTION
+_COOKIE_SAMESITE = "none" if _IS_PRODUCTION else "lax"
 
-@router.get("/login")
-async def login(request: Request):
+
+def _set_access_token_cookie(response, access_token: str) -> None:
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        secure=_COOKIE_SECURE,
+        samesite=_COOKIE_SAMESITE,
+        path="/",
+        max_age=60 * settings.jwt_expire_minutes,
+    )
+
+
+async def _get_optional_current_user(
+    request: Request,
+    db: AsyncSession,
+) -> User | None:
+
+    token = request.cookies.get("access_token")
+
+    if not token:
+        return None
+
+    payload = decode_access_token(token)
+    sub = payload.get("sub")
+
+    if not sub:
+        return None
+
+    user = await UserService.get_user_by_id(db, UUID(sub))
+
+    if user is None or not user.is_active:
+        return None
+
+    return user
+
+
+@router.get(
+    "/login",
+    summary="Start central login via Microsoft",
+    responses={302: {"description": "Redirect to Microsoft's OAuth consent screen."}},
+)
+async def redirect_to_microsoft_login(request: Request):
+    """Kicks off the central (Orbita's own) Microsoft OAuth login flow. On success, Microsoft redirects back to `GET /auth/callback`."""
     return await oauth.microsoft.authorize_redirect(
         request,
         settings.microsoft_redirect_uri,
     )
 
-@router.post("/logout")
-async def logout():
+@router.get(
+    "/authorize",
+    summary="Start an SSO handoff for another app",
+    responses={
+        302: {"description": "Redirect either to Orbita login (no session yet) or to the app's redirect_uri with a one-time code."},
+        400: {"model": ErrorDetail, "description": "Unknown/inactive app, or redirect_uri not registered for it."},
+        403: {"model": ErrorDetail, "description": "User has no role assigned for this app."},
+    },
+)
+async def start_sso_authorization(
+    request: Request,
+    client_id: str,
+    redirect_uri: str,
+    state: str = Query(min_length=16, max_length=512),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Entry point another app's frontend redirects to for SSO. If the browser has no valid Orbita
+    session cookie yet, stashes the request and sends the user to Orbita login, where either a local
+    password or Microsoft can be used. Otherwise validates client_id/redirect_uri against the apps
+    registry, checks the user has a role for that app, and redirects back with a 60-second one-time code.
+    """
+    app = await AppService.get_by_client_id(db, client_id)
+    if app is None or not app.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unknown or inactive app",
+        )
+    if not await AppService.validate_redirect_uri(db, app, redirect_uri):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="redirect_uri is not registered for this app",
+        )
+
+    user = await _get_optional_current_user(request, db)
+
+    if user is None:
+        request.session["pending_authorize"] = {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "state": state,
+        }
+        return RedirectResponse(
+            url=f"{settings.frontend_url}/auth?continue=sso",
+            status_code=302,
+        )
+
+    return await build_authorize_redirect(db, user, client_id, redirect_uri, state)
+
+
+@router.get(
+    "/resume",
+    summary="Resume an SSO handoff after central login",
+    responses={302: {"description": "Redirect to the requesting app with a one-time code."}},
+)
+async def resume_sso_authorization(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    pending = request.session.get("pending_authorize")
+    if pending is None:
+        return RedirectResponse(
+            url=f"{settings.frontend_url}/auth?error=sso_session_missing",
+            status_code=302,
+        )
+
+    user = await _get_optional_current_user(request, db)
+    if user is None:
+        return RedirectResponse(
+            url=f"{settings.frontend_url}/auth?continue=sso",
+            status_code=302,
+        )
+
+    request.session.pop("pending_authorize", None)
+    try:
+        return await build_authorize_redirect(
+            db,
+            user,
+            pending["client_id"],
+            pending["redirect_uri"],
+            pending["state"],
+        )
+    except (HTTPException, KeyError):
+        return RedirectResponse(
+            url=f"{settings.frontend_url}/auth?error=sso_access_denied",
+            status_code=302,
+        )
+
+@router.post(
+    "/token",
+    response_model=TokenResponse,
+    summary="Exchange an SSO code for a per-app JWT",
+    responses={
+        400: {"model": ErrorDetail, "description": "Code is invalid, expired, already used, or the user is no longer available."},
+        401: {"model": ErrorDetail, "description": "Invalid client_id/client_secret."},
+        403: {"model": ErrorDetail, "description": "User has no role assigned for this app."},
+    },
+)
+async def exchange_code_for_app_token(
+    payload: TokenExchangeRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Called by another app's *backend* (not the browser), authenticated with its client_id/client_secret,
+    to redeem the one-time code from `/auth/authorize` for a short-lived (30 min) RS256 JWT carrying
+    that user's role(s) for this specific app. Also records the session so it can later be revoked.
+    """
+    app = await AppService.get_by_client_id(db, payload.client_id)
+
+    if app is None or not AppService.verify_client_secret(app, payload.client_secret):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid client credentials",
+        )
+
+    code_row = await AuthorizationCodeService.redeem_authorization_code(
+        db, payload.code, app, payload.redirect_uri,
+    )
+
+    if code_row is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid, expired, or already used code",
+        )
+
+    user = await UserService.get_user_by_id(db, code_row.user_id)
+
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User no longer available",
+        )
+
+    roles = await RoleService.list_roles_for_user_in_app(db, user.id, app)
+
+    if not roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User is not provisioned for this app",
+        )
+
+    access_token, jti, expires_at = create_app_token(
+        user_id=str(user.id),
+        email=user.email,
+        name=user.full_name,
+        client_id=app.client_id,
+        roles=roles,
+    )
+
+    await AppSessionService.record_app_session(db, jti, user, app, expires_at)
+
+    return TokenResponse(
+        access_token=access_token,
+        expires_in=60 * APP_TOKEN_EXPIRE_MINUTES,
+    )
+
+@router.post(
+    "/introspect",
+    response_model=IntrospectResponse,
+    summary="Check whether a per-app JWT is still active",
+    responses={
+        401: {"model": ErrorDetail, "description": "Invalid client_id/client_secret."},
+    },
+)
+async def introspect_app_token(
+    payload: IntrospectRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Opt-in check for apps that want revocation to take effect before a token's natural 30-minute expiry
+    (e.g. right after logout). Returns `active: false` (200, not an error) for a token whose signature is
+    valid but whose session was revoked or has expired, since per-app tokens are stateless JWTs otherwise.
+    """
+    app = await AppService.get_by_client_id(db, payload.client_id)
+
+    if app is None or not AppService.verify_client_secret(app, payload.client_secret):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid client credentials",
+        )
+
+    claims = decode_app_token(payload.token, audience=payload.client_id)
+    jti = claims.get("jti")
+
+    if not jti:
+        return IntrospectResponse(active=False)
+
+    session = await AppSessionService.is_session_active(db, jti)
+
+    if session is None:
+        return IntrospectResponse(active=False)
+
+    return IntrospectResponse(
+        active=True,
+        sub=claims.get("sub"),
+        email=claims.get("email"),
+        roles=claims.get("roles"),
+        exp=claims.get("exp"),
+    )
+
+@router.post(
+    "/logout",
+    summary="Log out and revoke all per-app sessions",
+)
+async def logout_and_revoke_sessions(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Clears the central session cookie and revokes every `app_sessions` row for this user, so any app that
+    calls `POST /auth/introspect` will immediately see their token as inactive. Apps that never call
+    introspect keep honoring their already-issued token until its natural 30-minute expiry (by design).
+    Safe to call with no session — always returns 200.
+    """
+    user = await _get_optional_current_user(request, db)
+
+    if user is not None:
+        await AppSessionService.revoke_all_for_user(db, user.id)
 
     response = JSONResponse(
         content={
@@ -44,17 +332,30 @@ async def logout():
     response.delete_cookie(
         key="access_token",
         httponly=True,
-        secure=True,  # Put true in Production
-        samesite="none",
+        secure=_COOKIE_SECURE,
+        samesite=_COOKIE_SAMESITE,
     )
 
     return response
 
-@router.get("/callback", name="auth_callback")
-async def auth_callback(
+@router.get(
+    "/callback",
+    name="handle_microsoft_callback",
+    summary="Microsoft OAuth callback",
+    responses={
+        302: {"description": "Redirect to the frontend (or, if resuming an SSO handoff, to the other app's redirect_uri) with the session cookie set."},
+    },
+)
+async def handle_microsoft_callback(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Where Microsoft redirects back to after login. Creates or updates the local user record, rejects
+    inactive accounts, issues the central session cookie, and resumes a pending SSO handoff if one was
+    stashed by `/auth/authorize`.
+    Never raises to the caller: on any OAuth/upsert failure it redirects to the frontend with `?error=...`.
+    """
     try:
         token = await oauth.microsoft.authorize_access_token(
             request,
@@ -69,7 +370,7 @@ async def auth_callback(
     microsoft_user = token["userinfo"]
 
     try:
-        user = await UserService.upsert(
+        user = await UserService.upsert_user(
             db=db,
             microsoft_id=microsoft_user["oid"],
             email=microsoft_user["preferred_username"],
@@ -81,34 +382,171 @@ async def auth_callback(
             url=f"{settings.frontend_url}/auth/callback?error=authentication_failed"
         )
 
+    await AccessService.bootstrap_platform_admins(
+        db,
+        settings.platform_admin_emails.split(","),
+    )
+
+    if not user.is_active:
+        await AccessService.audit(db, event="login.inactive", user_id=user.id, request=request)
+        return RedirectResponse(
+            url=f"{settings.frontend_url}/auth/callback?error=user_inactive"
+        )
+
+    await AccessService.ensure_default_role(db, user)
+    roles = await AccessService.role_names(db, user.id)
+
     access_token = create_access_token(
         user_id=str(user.id),
         email=user.email,
+        roles=roles,
     )
 
-    response = RedirectResponse(
-        url=f"{settings.frontend_url}/auth/callback",
-        status_code=302,
-    )
+    await AccessService.audit(db, event="login", user_id=user.id, request=request)
 
-    response.set_cookie(
-        key="access_token",
-        value=access_token,
-        httponly=True,
-        secure=True, # Change this line to True in Production
-        samesite="none",
-        path="/",
-        max_age=60 * settings.jwt_expire_minutes,
-    )
+    pending = request.session.pop("pending_authorize", None)
+
+    if pending:
+        try:
+            response = await build_authorize_redirect(
+                db,
+                user,
+                pending["client_id"],
+                pending["redirect_uri"],
+                pending["state"],
+            )
+        except (HTTPException, KeyError):
+            response = RedirectResponse(
+                url=f"{settings.frontend_url}/auth/callback?error=sso_access_denied",
+                status_code=302,
+            )
+    else:
+        response = RedirectResponse(
+            url=f"{settings.frontend_url}/auth/callback",
+            status_code=302,
+        )
+
+    _set_access_token_cookie(response, access_token)
     return response
 
-@router.get("/me")
-async def me(
-    current_user: User = Depends(get_current_user),
+@router.post(
+    "/login",
+    summary="Central login via email/password",
+    responses={
+        401: {"model": ErrorDetail, "description": "Unknown email or wrong password."},
+        403: {"model": ErrorDetail, "description": "The account is inactive."},
+    },
+)
+async def password_login(
+    payload: PasswordLoginRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
 ):
+    """
+    Local-account login for users with a `password_hash` set. Valid credentials only receive a central
+    session cookie when the account is active.
+    """
+    user = await UserService.get_by_email(db, str(payload.email))
+
+    if user is None or not verify_password(payload.password, user.password_hash):
+        await AccessService.audit(
+            db,
+            event="login.password_failed",
+            request=request,
+            details={"email": str(payload.email)},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password",
+        )
+
+    if not user.is_active:
+        await AccessService.audit(
+            db,
+            event="login.inactive",
+            user_id=user.id,
+            request=request,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User is inactive",
+        )
+
+    roles = await AccessService.role_names(db, user.id)
+    access_token = create_access_token(
+        user_id=str(user.id),
+        email=user.email,
+        roles=roles,
+    )
+
+    await AccessService.audit(db, event="login", user_id=user.id, request=request)
+
+    response = JSONResponse(content={"message": "Authenticated"})
+    _set_access_token_cookie(response, access_token)
+    return response
+
+# Not wired up yet - uncomment to enable local account self-registration.
+# @router.post("/register")
+async def register_user(
+    payload: RegisterRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Local self-registration by email/password. Disabled (decorator commented out) — deliberately not
+    exposed yet. New accounts created this way would default to `is_active=False`, same as any other
+    new user, requiring an `orbita_admin` to activate them before they can do anything.
+    """
+    existing = await UserService.get_by_email(db, str(payload.email))
+
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already registered",
+        )
+
+    user = await UserService.create_local_user(
+        db,
+        email=str(payload.email),
+        full_name=payload.full_name,
+        password_hash=hash_password(payload.password),
+    )
+
+    await AccessService.ensure_default_role(db, user)
+    roles = await AccessService.role_names(db, user.id)
+
+    access_token = create_access_token(
+        user_id=str(user.id),
+        email=user.email,
+        roles=roles,
+    )
+
+    await AccessService.audit(db, event="register", user_id=user.id, request=request)
+
+    response = JSONResponse(content={"message": "Registered"})
+    _set_access_token_cookie(response, access_token)
+    return response
+
+@router.get(
+    "/me",
+    summary="Get the current user's profile",
+    responses={
+        401: {"model": ErrorDetail, "description": "No/invalid session cookie."},
+        403: {"model": ErrorDetail, "description": "User is inactive."},
+    },
+)
+async def get_current_user_profile(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Returns the caller's identity plus their global roles (not per-app roles), read from the central session cookie."""
+    roles = await AccessService.role_names(db, current_user.id)
     return {
         "id": str(current_user.id),
         "email": current_user.email,
         "name": current_user.full_name,
         "active": current_user.is_active,
+        "is_platform_admin": current_user.is_platform_admin,
+        "roles": roles,
+        "role": roles[0] if roles else None,
     }

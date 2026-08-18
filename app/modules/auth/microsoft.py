@@ -28,10 +28,10 @@ _ISS_PATTERN = re.compile(
 )
 
 
-def _validate_iss(claims, value):
+def _validate_issuer_claim(claims, value):
     return bool(_ISS_PATTERN.match(value))
 
 
 ms_claims_options = {
-    "iss": {"essential": True, "validate": _validate_iss},
+    "iss": {"essential": True, "validate": _validate_issuer_claim},
 }
