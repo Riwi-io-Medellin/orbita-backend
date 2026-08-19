@@ -51,8 +51,19 @@ class AppService:
         return result.scalar_one_or_none()
 
     @staticmethod
-    async def list_apps(db: AsyncSession) -> list[App]:
+    async def list_apps(
+        db: AsyncSession,
+        is_active: bool | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[App]:
         query = select(App)
+
+        if is_active is not None:
+            query = query.where(App.is_active == is_active)
+
+        query = query.order_by(App.name).limit(limit).offset(offset)
+
         result = await db.execute(query)
 
         return list(result.scalars().all())
@@ -295,6 +306,8 @@ class RoleService:
     async def list_user_roles_for_app(
         db: AsyncSession,
         app: App,
+        limit: int = 100,
+        offset: int = 0,
     ) -> list[tuple[UUID, str, str, str]]:
 
         query = (
@@ -303,6 +316,8 @@ class RoleService:
             .join(Role, Role.id == UserAppRole.role_id)
             .where(UserAppRole.app_id == app.id)
             .order_by(User.email, Role.name)
+            .limit(limit)
+            .offset(offset)
         )
 
         result = await db.execute(query)
