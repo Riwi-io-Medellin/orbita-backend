@@ -117,27 +117,44 @@ class AccessService:
         )
         await db.commit()
 
+    # Ids that don't match any user are reported back rather than silently dropped
+    # (and, since this is a single multi-row INSERT, pre-filtering to ids that
+    # actually exist is what keeps one bad id from failing the whole batch with
+    # a ForeignKeyViolation - on_conflict_do_nothing() only covers the PK, not the FK).
     @staticmethod
-    async def bulk_assign_global_role(db: AsyncSession, user_ids: list[UUID], global_role_id: UUID) -> None:
+    async def bulk_assign_global_role(db: AsyncSession, user_ids: list[UUID], global_role_id: UUID) -> tuple[list[UUID], list[UUID]]:
         if not user_ids:
-            return
+            return [], []
 
-        await db.execute(
-            insert(user_global_roles)
-            .values([{"user_id": user_id, "global_role_id": global_role_id} for user_id in user_ids])
-            .on_conflict_do_nothing()
-        )
-        await db.commit()
+        existing_ids = set(await db.scalars(select(User.id).where(User.id.in_(user_ids))))
+        not_found_ids = [user_id for user_id in user_ids if user_id not in existing_ids]
 
-    @staticmethod
-    async def bulk_revoke_global_role(db: AsyncSession, user_ids: list[UUID], global_role_id: UUID) -> None:
-        await db.execute(
-            delete(user_global_roles).where(
-                user_global_roles.c.user_id.in_(user_ids),
-                user_global_roles.c.global_role_id == global_role_id,
+        if existing_ids:
+            await db.execute(
+                insert(user_global_roles)
+                .values([{"user_id": user_id, "global_role_id": global_role_id} for user_id in existing_ids])
+                .on_conflict_do_nothing()
             )
-        )
-        await db.commit()
+            await db.commit()
+
+        return list(existing_ids), not_found_ids
+
+    # Ids that don't match any user are reported back rather than silently dropped
+    @staticmethod
+    async def bulk_revoke_global_role(db: AsyncSession, user_ids: list[UUID], global_role_id: UUID) -> tuple[list[UUID], list[UUID]]:
+        existing_ids = set(await db.scalars(select(User.id).where(User.id.in_(user_ids))))
+        not_found_ids = [user_id for user_id in user_ids if user_id not in existing_ids]
+
+        if existing_ids:
+            await db.execute(
+                delete(user_global_roles).where(
+                    user_global_roles.c.user_id.in_(existing_ids),
+                    user_global_roles.c.global_role_id == global_role_id,
+                )
+            )
+            await db.commit()
+
+        return list(existing_ids), not_found_ids
 
     @staticmethod
     async def audit(db: AsyncSession, *, event: str, user_id=None, request=None, application_id=None, details: dict | None = None) -> None:

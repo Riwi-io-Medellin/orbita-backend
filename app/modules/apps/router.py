@@ -1,6 +1,7 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.session import get_db
@@ -36,7 +37,7 @@ router = APIRouter(
     response_model=AppCreated,
     status_code=status.HTTP_201_CREATED,
     summary="Register a new SSO app",
-    responses={400: {"model": ErrorDetail, "description": "client_id already registered."}},
+    responses={409: {"model": ErrorDetail, "description": "client_id already registered."}},
 )
 async def create_app(
     payload: AppCreate,
@@ -47,15 +48,22 @@ async def create_app(
 
     if existing is not None:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_409_CONFLICT,
             detail="client_id already registered",
         )
 
-    app, raw_secret = await AppService.create_app(
-        db,
-        client_id=payload.client_id,
-        name=payload.name,
-    )
+    try:
+        app, raw_secret = await AppService.create_app(
+            db,
+            client_id=payload.client_id,
+            name=payload.name,
+        )
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="client_id already registered",
+        )
 
     return AppCreated(
         id=app.id,
@@ -68,10 +76,13 @@ async def create_app(
 
 @router.get("/", response_model=list[AppRead], summary="List registered SSO apps")
 async def list_apps(
+    limit: int = Query(default=100, ge=1, le=250),
+    offset: int = Query(default=0, ge=0),
+    is_active: bool | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ):
-    """Returns every app registered for SSO, active or not."""
-    return await AppService.list_apps(db)
+    """Returns apps registered for SSO, ordered by name."""
+    return await AppService.list_apps(db, is_active=is_active, limit=limit, offset=offset)
 
 
 @router.patch(
@@ -102,7 +113,10 @@ async def update_app_status(
     response_model=RedirectURIRead,
     status_code=status.HTTP_201_CREATED,
     summary="Register an allowed redirect URI for an app",
-    responses={404: {"model": ErrorDetail, "description": "App not found."}},
+    responses={
+        404: {"model": ErrorDetail, "description": "App not found."},
+        409: {"model": ErrorDetail, "description": "This redirect_uri is already registered for this app."},
+    },
 )
 async def add_redirect_uri(
     client_id: str,
@@ -118,7 +132,14 @@ async def add_redirect_uri(
             detail="App not found",
         )
 
-    return await AppService.add_redirect_uri(db, app, payload.redirect_uri)
+    try:
+        return await AppService.add_redirect_uri(db, app, payload.redirect_uri)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This redirect_uri is already registered for this app",
+        )
 
 
 @router.post(
@@ -128,7 +149,7 @@ async def add_redirect_uri(
     summary="Create a role for an app",
     responses={
         404: {"model": ErrorDetail, "description": "App not found."},
-        400: {"model": ErrorDetail, "description": "A role with this name already exists for this app."},
+        409: {"model": ErrorDetail, "description": "A role with this name already exists for this app."},
     },
 )
 async def create_role(
@@ -149,11 +170,18 @@ async def create_role(
 
     if existing is not None:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_409_CONFLICT,
             detail="Role already exists for this app",
         )
 
-    return await RoleService.create_role(db, app, payload.name)
+    try:
+        return await RoleService.create_role(db, app, payload.name)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Role already exists for this app",
+        )
 
 
 @router.post(
@@ -281,6 +309,8 @@ async def unassign_role(
 )
 async def list_app_users(
     client_id: str,
+    limit: int = Query(default=100, ge=1, le=250),
+    offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
 ):
     """One row per (user, role) pair — a user with two roles in this app appears twice."""
@@ -292,7 +322,7 @@ async def list_app_users(
             detail="App not found",
         )
 
-    rows = await RoleService.list_user_roles_for_app(db, app)
+    rows = await RoleService.list_user_roles_for_app(db, app, limit=limit, offset=offset)
 
     return [
         UserAppRoleRead(user_id=user_id, email=email, full_name=full_name, role_name=role_name)

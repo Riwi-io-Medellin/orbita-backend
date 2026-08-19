@@ -1,6 +1,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, status
+from sqlalchemy.exc import IntegrityError
 
 from app.config.settings import settings
 
@@ -433,12 +434,19 @@ async def register_user(
             detail="Email already registered",
         )
 
-    user = await UserService.create_local_user(
-        db,
-        email=str(payload.email),
-        full_name=payload.full_name,
-        password_hash=hash_password(payload.password),
-    )
+    try:
+        user = await UserService.create_local_user(
+            db,
+            email=str(payload.email),
+            full_name=payload.full_name,
+            password_hash=hash_password(payload.password),
+        )
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already registered",
+        )
 
     await AccessService.ensure_default_role(db, user)
     roles = await AccessService.role_names(db, user.id)
