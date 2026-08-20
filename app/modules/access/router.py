@@ -2,6 +2,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.session import get_db
@@ -68,7 +69,7 @@ async def register_application_access(
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(get_current_platform_admin)],
     summary="Register a launcher tile for an app",
-    responses={400: {"model": ErrorDetail, "description": "slug already registered."}},
+    responses={409: {"model": ErrorDetail, "description": "slug already registered."}},
 )
 async def create_application(
     payload: ApplicationCreate,
@@ -82,16 +83,20 @@ async def create_application(
     """
     existing = await db.scalar(select(Application).where(Application.slug == payload.slug))
     if existing is not None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="slug already registered")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="slug already registered")
 
-    return await AccessService.create_application(
-        db,
-        slug=payload.slug,
-        name=payload.name,
-        description=payload.description,
-        url=payload.url,
-        icon=payload.icon,
-    )
+    try:
+        return await AccessService.create_application(
+            db,
+            slug=payload.slug,
+            name=payload.name,
+            description=payload.description,
+            url=payload.url,
+            icon=payload.icon,
+        )
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="slug already registered")
 
 
 @router.patch(
@@ -174,6 +179,7 @@ async def revoke_application_role(
 )
 async def list_audit_logs(
     limit: int = Query(default=100, ge=1, le=250),
+    offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
 ):
     """Most-recent-first feed of login attempts, app access, and registration events. Platform-admin only."""
@@ -183,6 +189,7 @@ async def list_audit_logs(
         .outerjoin(Application, AuditLog.application_id == Application.id)
         .order_by(AuditLog.created_at.desc())
         .limit(limit)
+        .offset(offset)
     )
 
     return [

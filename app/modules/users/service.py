@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 
@@ -52,6 +52,10 @@ class UserService:
     async def list_users(
         db: AsyncSession,
         include_deleted: bool = False,
+        is_active: bool | None = None,
+        search: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
     ) -> list[User]:
 
         query = select(User)
@@ -59,7 +63,16 @@ class UserService:
         if not include_deleted:
             query = query.where(User.deleted_at.is_(None))
 
-        result = await db.execute(query.order_by(User.email))
+        if is_active is not None:
+            query = query.where(User.is_active == is_active)
+
+        if search:
+            pattern = f"%{search}%"
+            query = query.where(or_(User.email.ilike(pattern), User.full_name.ilike(pattern)))
+
+        query = query.order_by(User.email).limit(limit).offset(offset)
+
+        result = await db.execute(query)
 
         return list(result.scalars().all())
 
@@ -93,40 +106,50 @@ class UserService:
 
         return user
 
-    # Bulk enables/disables login for a set of users
+    # Bulk enables/disables login for a set of users. Ids that don't match any
+    # user are reported back rather than silently dropped.
     @staticmethod
     async def bulk_set_active_status(
         db: AsyncSession,
         user_ids: list[UUID],
         is_active: bool,
-    ) -> list[User]:
+    ) -> tuple[list[User], list[UUID]]:
 
-        await db.execute(
-            update(User).where(User.id.in_(user_ids)).values(is_active=is_active)
-        )
-        await db.commit()
+        existing_ids = set(await db.scalars(select(User.id).where(User.id.in_(user_ids))))
+        not_found_ids = [user_id for user_id in user_ids if user_id not in existing_ids]
 
-        result = await db.execute(select(User).where(User.id.in_(user_ids)))
+        if existing_ids:
+            await db.execute(
+                update(User).where(User.id.in_(existing_ids)).values(is_active=is_active)
+            )
+            await db.commit()
 
-        return list(result.scalars().all())
+        result = await db.execute(select(User).where(User.id.in_(existing_ids)))
 
-    # Bulk soft-deletes a set of users: marks deleted_at and disables login
+        return list(result.scalars().all()), not_found_ids
+
+    # Bulk soft-deletes a set of users: marks deleted_at and disables login.
+    # Ids that don't match any user are reported back rather than silently dropped.
     @staticmethod
     async def bulk_soft_delete(
         db: AsyncSession,
         user_ids: list[UUID],
-    ) -> list[User]:
+    ) -> tuple[list[User], list[UUID]]:
 
-        await db.execute(
-            update(User)
-            .where(User.id.in_(user_ids))
-            .values(is_active=False, deleted_at=datetime.now(timezone.utc))
-        )
-        await db.commit()
+        existing_ids = set(await db.scalars(select(User.id).where(User.id.in_(user_ids))))
+        not_found_ids = [user_id for user_id in user_ids if user_id not in existing_ids]
 
-        result = await db.execute(select(User).where(User.id.in_(user_ids)))
+        if existing_ids:
+            await db.execute(
+                update(User)
+                .where(User.id.in_(existing_ids))
+                .values(is_active=False, deleted_at=datetime.now(timezone.utc))
+            )
+            await db.commit()
 
-        return list(result.scalars().all())
+        result = await db.execute(select(User).where(User.id.in_(existing_ids)))
+
+        return list(result.scalars().all()), not_found_ids
 
     @staticmethod
     async def update_user(

@@ -20,6 +20,13 @@ application_global_roles = Table(
     Column("global_role_id", UUID(as_uuid=True), ForeignKey("global_roles.id", ondelete="CASCADE"), primary_key=True),
 )
 
+user_applications = Table(
+    "user_applications", Base.metadata,
+    Column("user_id", UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("application_id", UUID(as_uuid=True), ForeignKey("applications.id", ondelete="CASCADE"), primary_key=True),
+    Column("granted_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+)
+
 
 class GlobalRole(Base):
     __tablename__ = "global_roles"

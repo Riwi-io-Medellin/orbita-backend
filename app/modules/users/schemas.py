@@ -1,7 +1,9 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+BULK_MAX_IDS = 500
 
 
 class UserAdminRead(BaseModel):
@@ -36,7 +38,7 @@ class UserStatusUpdate(BaseModel):
 
 
 class BulkUserIds(BaseModel):
-    user_ids: list[uuid.UUID]
+    user_ids: list[uuid.UUID] = Field(min_length=1, max_length=BULK_MAX_IDS)
 
     model_config = {
         "json_schema_extra": {
@@ -51,7 +53,7 @@ class BulkUserIds(BaseModel):
 
 
 class BulkStatusUpdate(BaseModel):
-    user_ids: list[uuid.UUID]
+    user_ids: list[uuid.UUID] = Field(min_length=1, max_length=BULK_MAX_IDS)
     is_active: bool
 
     model_config = {
@@ -62,6 +64,38 @@ class BulkStatusUpdate(BaseModel):
                     "8cd78071-af7a-460b-954b-e58801f13f73",
                 ],
                 "is_active": True,
+            }
+        }
+    }
+
+
+class BulkUserStatusResult(BaseModel):
+    """Result of a bulk status/delete operation: the ids in the request that don't match any user are reported, not silently dropped."""
+
+    updated: list[UserAdminRead]
+    not_found_ids: list[uuid.UUID]
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "updated": [UserAdminRead.model_config["json_schema_extra"]["example"]],
+                "not_found_ids": ["00000000-0000-0000-0000-000000000000"],
+            }
+        }
+    }
+
+
+class BulkRoleAssignmentResult(BaseModel):
+    """Result of a bulk global-role grant/revoke: the ids in the request that don't match any user are reported, not silently dropped."""
+
+    updated_user_ids: list[uuid.UUID]
+    not_found_ids: list[uuid.UUID]
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "updated_user_ids": ["6a2c18e6-0fc1-49bd-8b0e-d76f42ed4790"],
+                "not_found_ids": ["00000000-0000-0000-0000-000000000000"],
             }
         }
     }

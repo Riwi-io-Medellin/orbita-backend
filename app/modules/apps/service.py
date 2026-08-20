@@ -4,6 +4,7 @@ import secrets
 from uuid import UUID
 
 from sqlalchemy import delete, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.apps.models import App, AppRedirectURI, Role, UserAppRole
@@ -51,8 +52,19 @@ class AppService:
         return result.scalar_one_or_none()
 
     @staticmethod
-    async def list_apps(db: AsyncSession) -> list[App]:
+    async def list_apps(
+        db: AsyncSession,
+        is_active: bool | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[App]:
         query = select(App)
+
+        if is_active is not None:
+            query = query.where(App.is_active == is_active)
+
+        query = query.order_by(App.name).limit(limit).offset(offset)
+
         result = await db.execute(query)
 
         return list(result.scalars().all())
@@ -292,9 +304,58 @@ class RoleService:
         await db.commit()
 
     @staticmethod
+    async def bulk_assign_role_to_users(
+        db: AsyncSession,
+        user_ids: list[UUID],
+        app: App,
+        role: Role,
+    ) -> tuple[list[UUID], list[UUID]]:
+
+        if not user_ids:
+            return [], []
+
+        existing_ids = set(await db.scalars(select(User.id).where(User.id.in_(user_ids))))
+        not_found_ids = [user_id for user_id in user_ids if user_id not in existing_ids]
+
+        if existing_ids:
+            await db.execute(
+                insert(UserAppRole)
+                .values([{"user_id": uid, "app_id": app.id, "role_id": role.id} for uid in existing_ids])
+                .on_conflict_do_nothing()
+            )
+            await db.commit()
+
+        return list(existing_ids), not_found_ids
+
+    @staticmethod
+    async def bulk_unassign_role_from_users(
+        db: AsyncSession,
+        user_ids: list[UUID],
+        app: App,
+        role: Role,
+    ) -> tuple[list[UUID], list[UUID]]:
+
+        existing_ids = set(await db.scalars(select(User.id).where(User.id.in_(user_ids))))
+        not_found_ids = [user_id for user_id in user_ids if user_id not in existing_ids]
+
+        if existing_ids:
+            await db.execute(
+                delete(UserAppRole).where(
+                    UserAppRole.user_id.in_(existing_ids),
+                    UserAppRole.app_id == app.id,
+                    UserAppRole.role_id == role.id,
+                )
+            )
+            await db.commit()
+
+        return list(existing_ids), not_found_ids
+
+    @staticmethod
     async def list_user_roles_for_app(
         db: AsyncSession,
         app: App,
+        limit: int = 100,
+        offset: int = 0,
     ) -> list[tuple[UUID, str, str, str]]:
 
         query = (
@@ -303,6 +364,30 @@ class RoleService:
             .join(Role, Role.id == UserAppRole.role_id)
             .where(UserAppRole.app_id == app.id)
             .order_by(User.email, Role.name)
+            .limit(limit)
+            .offset(offset)
+        )
+
+        result = await db.execute(query)
+
+        return list(result.all())
+
+    @staticmethod
+    async def list_app_roles_for_user(
+        db: AsyncSession,
+        user_id: UUID,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[tuple[UUID, str, str, UUID, str]]:
+
+        query = (
+            select(App.id, App.client_id, App.name, Role.id, Role.name)
+            .join(UserAppRole, UserAppRole.app_id == App.id)
+            .join(Role, Role.id == UserAppRole.role_id)
+            .where(UserAppRole.user_id == user_id)
+            .order_by(App.name, Role.name)
+            .limit(limit)
+            .offset(offset)
         )
 
         result = await db.execute(query)

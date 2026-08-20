@@ -138,6 +138,26 @@ class AppStatusUpdate(BaseModel):
     model_config = {"json_schema_extra": {"example": {"is_active": False}}}
 
 
+class AppRoleRead(BaseModel):
+    app_id: uuid.UUID
+    client_id: str
+    app_name: str
+    role_id: uuid.UUID
+    role_name: str
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "app_id": "de3008c1-3d48-48a5-b30a-94f395a45306",
+                "client_id": "riwi-portal",
+                "app_name": "Riwi Portal",
+                "role_id": "3d338516-48ff-4a01-a607-0501be303935",
+                "role_name": "staff",
+            }
+        }
+    }
+
+
 class UserAppRoleRead(BaseModel):
     user_id: uuid.UUID
     email: str
