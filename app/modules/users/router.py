@@ -4,8 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.session import get_db
-from app.modules.access.models import GlobalRole
+from app.modules.access.models import Application, GlobalRole
+from app.modules.access.schemas import AuthorizedApplicationRead
 from app.modules.access.service import AccessService
+from app.modules.apps.schemas import AppRoleRead
+from app.modules.apps.service import RoleService
 from app.modules.auth.dependencies import get_current_platform_admin
 from app.modules.users.models import User
 from app.modules.users.schemas import (
@@ -134,6 +137,42 @@ async def bulk_revoke_global_role(
     return BulkRoleAssignmentResult(updated_user_ids=updated_user_ids, not_found_ids=not_found_ids)
 
 
+@router.post(
+    "/bulk/applications/{application_id}/grant",
+    response_model=BulkRoleAssignmentResult,
+    summary="Bulk grant direct access to an application",
+    responses={404: {"model": ErrorDetail, "description": "Application not found."}},
+)
+async def bulk_grant_application_access(
+    application_id: UUID,
+    payload: BulkUserIds,
+    db: AsyncSession = Depends(get_db),
+):
+    """Grants every listed user id direct access to this application, independent of global roles or per-app roles (1-500 ids per request). Idempotent per user."""
+    application = await db.get(Application, application_id)
+
+    if application is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
+
+    updated_user_ids, not_found_ids = await AccessService.bulk_grant_application_access(db, payload.user_ids, application_id)
+    return BulkRoleAssignmentResult(updated_user_ids=updated_user_ids, not_found_ids=not_found_ids)
+
+
+@router.post(
+    "/bulk/applications/{application_id}/revoke",
+    response_model=BulkRoleAssignmentResult,
+    summary="Bulk revoke direct access to an application",
+)
+async def bulk_revoke_application_access(
+    application_id: UUID,
+    payload: BulkUserIds,
+    db: AsyncSession = Depends(get_db),
+):
+    """Revokes direct access for every listed user id (1-500 ids per request)."""
+    updated_user_ids, not_found_ids = await AccessService.bulk_revoke_application_access(db, payload.user_ids, application_id)
+    return BulkRoleAssignmentResult(updated_user_ids=updated_user_ids, not_found_ids=not_found_ids)
+
+
 @router.patch(
     "/{user_id}/status",
     response_model=UserAdminRead,
@@ -235,3 +274,92 @@ async def revoke_global_role(
 ):
     """Revokes the role. If it was the user's only path to an app's required role, that app disappears from their launcher. No-op if the link doesn't exist."""
     await AccessService.revoke_global_role(db, user_id, role_id)
+
+
+@router.post(
+    "/{user_id}/applications/{application_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Grant a single user direct access to an application",
+    responses={404: {"model": ErrorDetail, "description": "User not found, or application not found."}},
+)
+async def grant_application_access(
+    user_id: UUID,
+    application_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Grants direct access to this application, independent of global roles or per-app roles. Idempotent."""
+    user = await UserService.get_user_by_id(db, user_id)
+
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    application = await db.get(Application, application_id)
+
+    if application is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
+
+    await AccessService.grant_application_access(db, user_id, application_id)
+
+
+@router.delete(
+    "/{user_id}/applications/{application_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Revoke a single user's direct access to an application",
+)
+async def revoke_application_access(
+    user_id: UUID,
+    application_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Revokes the direct grant. No-op if it doesn't exist."""
+    await AccessService.revoke_application_access(db, user_id, application_id)
+
+
+@router.get(
+    "/{user_id}/app-roles",
+    response_model=list[AppRoleRead],
+    summary="List every (app, role) pair a user holds across all SSO apps",
+    responses={404: {"model": ErrorDetail, "description": "User not found."}},
+)
+async def list_user_app_roles(
+    user_id: UUID,
+    limit: int = Query(default=100, ge=1, le=250),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cross-app view: every SSO app this user has a role in, and which role. Complements the per-app GET /apps/{client_id}/users listing."""
+    user = await UserService.get_user_by_id(db, user_id)
+
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    rows = await RoleService.list_app_roles_for_user(db, user_id, limit=limit, offset=offset)
+
+    return [
+        AppRoleRead(app_id=app_id, client_id=client_id, app_name=app_name, role_id=role_id, role_name=role_name)
+        for app_id, client_id, app_name, role_id, role_name in rows
+    ]
+
+
+@router.get(
+    "/{user_id}/applications",
+    response_model=list[AuthorizedApplicationRead],
+    summary="List every application a user can currently see",
+    responses={404: {"model": ErrorDetail, "description": "User not found."}},
+)
+async def list_user_applications(
+    user_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin view of one user's launcher: every active Application they're authorized to see, resolved the same way as their own GET /applications (global-role link, per-app role, or a direct grant)."""
+    user = await UserService.get_user_by_id(db, user_id)
+
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    apps = await AccessService.authorized_applications(db, user_id)
+
+    return [
+        {"id": str(app.id), "slug": app.slug, "name": app.name, "description": app.description, "url": app.url, "icon": app.icon}
+        for app in apps
+    ]

@@ -4,7 +4,14 @@ from sqlalchemy import delete, func, select, union
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.access.models import Application, AuditLog, GlobalRole, application_global_roles, user_global_roles
+from app.modules.access.models import (
+    Application,
+    AuditLog,
+    GlobalRole,
+    application_global_roles,
+    user_applications,
+    user_global_roles,
+)
 from app.modules.users.models import User
 from app.modules.apps.models import App, UserAppRole
 
@@ -80,7 +87,12 @@ class AccessService:
                 App.is_active.is_(True),
             )
         )
-        authorized_ids = union(legacy_ids, app_role_ids).subquery()
+        direct_ids = (
+            select(Application.id)
+            .join(user_applications, user_applications.c.application_id == Application.id)
+            .where(user_applications.c.user_id == user_id, Application.is_active.is_(True))
+        )
+        authorized_ids = union(legacy_ids, app_role_ids, direct_ids).subquery()
         result = await db.scalars(
             select(Application)
             .join(authorized_ids, authorized_ids.c.id == Application.id)
@@ -163,6 +175,25 @@ class AccessService:
         )
         await db.commit()
 
+    @staticmethod
+    async def grant_application_access(db: AsyncSession, user_id: UUID, application_id: UUID) -> None:
+        await db.execute(
+            insert(user_applications)
+            .values(user_id=user_id, application_id=application_id)
+            .on_conflict_do_nothing()
+        )
+        await db.commit()
+
+    @staticmethod
+    async def revoke_application_access(db: AsyncSession, user_id: UUID, application_id: UUID) -> None:
+        await db.execute(
+            delete(user_applications).where(
+                user_applications.c.user_id == user_id,
+                user_applications.c.application_id == application_id,
+            )
+        )
+        await db.commit()
+
     # Ids that don't match any user are reported back rather than silently dropped
     # (and, since this is a single multi-row INSERT, pre-filtering to ids that
     # actually exist is what keeps one bad id from failing the whole batch with
@@ -196,6 +227,40 @@ class AccessService:
                 delete(user_global_roles).where(
                     user_global_roles.c.user_id.in_(existing_ids),
                     user_global_roles.c.global_role_id == global_role_id,
+                )
+            )
+            await db.commit()
+
+        return list(existing_ids), not_found_ids
+
+    @staticmethod
+    async def bulk_grant_application_access(db: AsyncSession, user_ids: list[UUID], application_id: UUID) -> tuple[list[UUID], list[UUID]]:
+        if not user_ids:
+            return [], []
+
+        existing_ids = set(await db.scalars(select(User.id).where(User.id.in_(user_ids))))
+        not_found_ids = [user_id for user_id in user_ids if user_id not in existing_ids]
+
+        if existing_ids:
+            await db.execute(
+                insert(user_applications)
+                .values([{"user_id": user_id, "application_id": application_id} for user_id in existing_ids])
+                .on_conflict_do_nothing()
+            )
+            await db.commit()
+
+        return list(existing_ids), not_found_ids
+
+    @staticmethod
+    async def bulk_revoke_application_access(db: AsyncSession, user_ids: list[UUID], application_id: UUID) -> tuple[list[UUID], list[UUID]]:
+        existing_ids = set(await db.scalars(select(User.id).where(User.id.in_(user_ids))))
+        not_found_ids = [user_id for user_id in user_ids if user_id not in existing_ids]
+
+        if existing_ids:
+            await db.execute(
+                delete(user_applications).where(
+                    user_applications.c.user_id.in_(existing_ids),
+                    user_applications.c.application_id == application_id,
                 )
             )
             await db.commit()

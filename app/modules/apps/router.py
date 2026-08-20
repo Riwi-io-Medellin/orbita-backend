@@ -19,6 +19,7 @@ from app.modules.apps.schemas import (
     UserAppRoleRead,
 )
 from app.modules.apps.service import AppService, RoleService
+from app.modules.users.schemas import BulkRoleAssignmentResult, BulkUserIds
 from app.schemas import ErrorDetail
 
 router = APIRouter(
@@ -226,6 +227,72 @@ async def assign_role(
         )
 
     await RoleService.assign_role_to_user(db, payload.user_id, app, role)
+
+
+@router.post(
+    "/{client_id}/roles/{role_id}/assign/bulk",
+    response_model=BulkRoleAssignmentResult,
+    summary="Bulk assign a role to users for this app",
+    responses={404: {"model": ErrorDetail, "description": "App not found, or role not found for this app."}},
+)
+async def bulk_assign_role(
+    client_id: str,
+    role_id: UUID,
+    payload: BulkUserIds,
+    db: AsyncSession = Depends(get_db),
+):
+    """Grants this app-scoped role to every listed user id (1-500 ids per request). Idempotent per user. Ids that don't match any user are reported in `not_found_ids`, not silently dropped."""
+    app = await AppService.get_by_client_id(db, client_id)
+
+    if app is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="App not found",
+        )
+
+    role = await RoleService.get_role_by_id(db, app, role_id)
+
+    if role is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Role not found",
+        )
+
+    updated_ids, not_found_ids = await RoleService.bulk_assign_role_to_users(db, payload.user_ids, app, role)
+    return BulkRoleAssignmentResult(updated_user_ids=updated_ids, not_found_ids=not_found_ids)
+
+
+@router.post(
+    "/{client_id}/roles/{role_id}/unassign/bulk",
+    response_model=BulkRoleAssignmentResult,
+    summary="Bulk unassign a role from users for this app",
+    responses={404: {"model": ErrorDetail, "description": "App not found, or role not found for this app."}},
+)
+async def bulk_unassign_role(
+    client_id: str,
+    role_id: UUID,
+    payload: BulkUserIds,
+    db: AsyncSession = Depends(get_db),
+):
+    """Removes this app-scoped role from every listed user id (1-500 ids per request)."""
+    app = await AppService.get_by_client_id(db, client_id)
+
+    if app is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="App not found",
+        )
+
+    role = await RoleService.get_role_by_id(db, app, role_id)
+
+    if role is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Role not found",
+        )
+
+    updated_ids, not_found_ids = await RoleService.bulk_unassign_role_from_users(db, payload.user_ids, app, role)
+    return BulkRoleAssignmentResult(updated_user_ids=updated_ids, not_found_ids=not_found_ids)
 
 
 @router.get(
