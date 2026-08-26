@@ -1,4 +1,5 @@
 import uuid
+from typing import Literal
 from datetime import datetime
 
 from pydantic import BaseModel
@@ -31,6 +32,7 @@ class ApplicationRead(BaseModel):
     description: str
     url: str
     icon: str | None
+    access_policy: Literal["catalog", "sso_role"]
     is_active: bool
 
     model_config = {
@@ -43,6 +45,7 @@ class ApplicationRead(BaseModel):
                 "description": "Main student/staff portal.",
                 "url": "https://portal.riwi.io",
                 "icon": "portal",
+                "access_policy": "catalog",
                 "is_active": True,
             }
         },
@@ -81,6 +84,7 @@ class AuthorizedApplicationRead(BaseModel):
     description: str
     url: str
     icon: str | None
+    access_policy: Literal["catalog", "sso_role"]
 
     model_config = {
         "json_schema_extra": {
@@ -91,6 +95,7 @@ class AuthorizedApplicationRead(BaseModel):
                 "description": "Main student/staff portal.",
                 "url": "https://portal.riwi.io",
                 "icon": "portal",
+                "access_policy": "catalog",
             }
         }
     }

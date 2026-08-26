@@ -4,8 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.session import get_db
-from app.modules.access.models import Application, GlobalRole
-from app.modules.access.schemas import AuthorizedApplicationRead
+from app.modules.access.models import Application, ApplicationAccessPolicy, GlobalRole
+from app.modules.access.schemas import AuthorizedApplicationRead, GlobalRoleRead
 from app.modules.access.service import AccessService
 from app.modules.apps.schemas import AppRoleRead
 from app.modules.apps.service import RoleService
@@ -141,18 +141,23 @@ async def bulk_revoke_global_role(
     "/bulk/applications/{application_id}/grant",
     response_model=BulkRoleAssignmentResult,
     summary="Bulk grant direct access to an application",
-    responses={404: {"model": ErrorDetail, "description": "Application not found."}},
+    responses={
+        404: {"model": ErrorDetail, "description": "Application not found."},
+        409: {"model": ErrorDetail, "description": "SSO applications require an app-scoped role assignment."},
+    },
 )
 async def bulk_grant_application_access(
     application_id: UUID,
     payload: BulkUserIds,
     db: AsyncSession = Depends(get_db),
 ):
-    """Grants every listed user id direct access to this application, independent of global roles or per-app roles (1-500 ids per request). Idempotent per user."""
+    """Grants every listed user direct access to a catalog application (1-500 ids per request). SSO applications reject this endpoint because a per-app role is required to launch and authenticate."""
     application = await db.get(Application, application_id)
 
     if application is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
+    if application.access_policy == ApplicationAccessPolicy.SSO_ROLE.value:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="SSO applications require app-scoped role assignments")
 
     updated_user_ids, not_found_ids = await AccessService.bulk_grant_application_access(db, payload.user_ids, application_id)
     return BulkRoleAssignmentResult(updated_user_ids=updated_user_ids, not_found_ids=not_found_ids)
@@ -262,6 +267,24 @@ async def assign_global_role(
     await AccessService.assign_global_role(db, user_id, role_id)
 
 
+@router.get(
+    "/{user_id}/global-roles",
+    response_model=list[GlobalRoleRead],
+    summary="List a user's assigned global roles",
+    responses={404: {"model": ErrorDetail, "description": "User not found."}},
+)
+async def list_user_global_roles(
+    user_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Returns the global roles currently held by one user. These only affect catalog application access."""
+    user = await UserService.get_user_by_id(db, user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    return await AccessService.list_global_roles_for_user(db, user_id)
+
+
 @router.delete(
     "/{user_id}/global-roles/{role_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -280,14 +303,17 @@ async def revoke_global_role(
     "/{user_id}/applications/{application_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Grant a single user direct access to an application",
-    responses={404: {"model": ErrorDetail, "description": "User not found, or application not found."}},
+    responses={
+        404: {"model": ErrorDetail, "description": "User not found, or application not found."},
+        409: {"model": ErrorDetail, "description": "SSO applications require an app-scoped role assignment."},
+    },
 )
 async def grant_application_access(
     user_id: UUID,
     application_id: UUID,
     db: AsyncSession = Depends(get_db),
 ):
-    """Grants direct access to this application, independent of global roles or per-app roles. Idempotent."""
+    """Grants direct access to a launcher-only catalog application. For an SSO application use `POST /apps/{client_id}/roles/{role_id}/assign`; that role grants both launcher visibility and SSO access."""
     user = await UserService.get_user_by_id(db, user_id)
 
     if user is None:
@@ -297,6 +323,8 @@ async def grant_application_access(
 
     if application is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
+    if application.access_policy == ApplicationAccessPolicy.SSO_ROLE.value:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="SSO applications require app-scoped role assignments")
 
     await AccessService.grant_application_access(db, user_id, application_id)
 
@@ -351,7 +379,7 @@ async def list_user_applications(
     user_id: UUID,
     db: AsyncSession = Depends(get_db),
 ):
-    """Admin view of one user's launcher: every active Application they're authorized to see, resolved the same way as their own GET /applications (global-role link, per-app role, or a direct grant)."""
+    """Admin view of one user's launcher: catalog apps resolve through global/direct grants and SSO apps resolve through app-scoped roles, exactly as `GET /applications` does."""
     user = await UserService.get_user_by_id(db, user_id)
 
     if user is None:
@@ -360,6 +388,6 @@ async def list_user_applications(
     apps = await AccessService.authorized_applications(db, user_id)
 
     return [
-        {"id": str(app.id), "slug": app.slug, "name": app.name, "description": app.description, "url": app.url, "icon": app.icon}
+        {"id": str(app.id), "slug": app.slug, "name": app.name, "description": app.description, "url": app.url, "icon": app.icon, "access_policy": app.access_policy}
         for app in apps
     ]

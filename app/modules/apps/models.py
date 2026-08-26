@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -106,6 +106,13 @@ class Role(Base):
         String(255),
         nullable=False,
     )
+
+    # `name` remains the backwards-compatible API field; it is the stable role key
+    # transmitted in the JWT. Presentation metadata belongs to the application catalog.
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, server_default="true", nullable=False)
+    managed_by_app: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
