@@ -1,6 +1,5 @@
 import hashlib
 import hmac
-import secrets
 from uuid import UUID
 
 from sqlalchemy import delete, select
@@ -8,22 +7,10 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.apps.models import App, AppRedirectURI, Role, UserAppRole
+from app.modules.apps.schemas import RoleCatalogEntry
 from app.modules.access.models import Application
 from app.modules.users.models import User
-
-_PBKDF2_ITERATIONS = 260_000
-
-
-def _hash_secret(raw_secret: str) -> str:
-    salt = secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac(
-        "sha256",
-        raw_secret.encode("utf-8"),
-        bytes.fromhex(salt),
-        _PBKDF2_ITERATIONS,
-    ).hex()
-    return f"{salt}${digest}"
-
+from app.modules.apps.application_lifecycle import _PBKDF2_ITERATIONS
 
 def _verify_secret(raw_secret: str, stored_hash: str) -> bool:
     salt, _, digest = stored_hash.partition("$")
@@ -77,43 +64,6 @@ class AppService:
         return await db.scalar(select(Application).where(Application.slug == slug))
 
     @staticmethod
-    async def create_app(
-        db: AsyncSession,
-        client_id: str,
-        slug: str,
-        name: str,
-        description: str,
-        url: str,
-        icon: str | None,
-    ) -> tuple[App, str]:
-
-        raw_secret = secrets.token_urlsafe(32)
-
-        application = Application(
-            slug=slug,
-            name=name,
-            description=description,
-            url=url,
-            icon=icon,
-        )
-        db.add(application)
-        await db.flush()
-
-        app = App(
-            application_id=application.id,
-            client_id=client_id,
-            name=name,
-            client_secret_hash=_hash_secret(raw_secret),
-        )
-
-        db.add(app)
-
-        await db.commit()
-        await db.refresh(app)
-
-        return app, raw_secret
-
-    @staticmethod
     def verify_client_secret(app: App, raw_secret: str) -> bool:
         return _verify_secret(raw_secret, app.client_secret_hash)
 
@@ -135,25 +85,6 @@ class AppService:
         await db.refresh(entry)
 
         return entry
-
-    @staticmethod
-    async def set_active_status(
-        db: AsyncSession,
-        app: App,
-        is_active: bool,
-    ) -> App:
-
-        app.is_active = is_active
-
-        if app.application_id is not None:
-            application = await db.get(Application, app.application_id)
-            if application is not None:
-                application.is_active = is_active
-
-        await db.commit()
-        await db.refresh(app)
-
-        return app
 
     @staticmethod
     async def validate_redirect_uri(
@@ -181,7 +112,7 @@ class RoleService:
         name: str,
     ) -> Role:
 
-        role = Role(app_id=app.id, name=name)
+        role = Role(app_id=app.id, name=name, display_name=name)
 
         db.add(role)
 
@@ -216,6 +147,7 @@ class RoleService:
         query = select(Role).where(
             Role.app_id == app.id,
             Role.id == role_id,
+            Role.is_active.is_(True),
         )
 
         result = await db.execute(query)
@@ -223,8 +155,11 @@ class RoleService:
         return result.scalar_one_or_none()
 
     @staticmethod
-    async def list_for_app(db: AsyncSession, app: App) -> list[Role]:
+    async def list_for_app(db: AsyncSession, app: App, include_inactive: bool = False) -> list[Role]:
         query = select(Role).where(Role.app_id == app.id)
+        if not include_inactive:
+            query = query.where(Role.is_active.is_(True))
+        query = query.order_by(Role.display_name)
         result = await db.execute(query)
 
         return list(result.scalars().all())
@@ -273,12 +208,51 @@ class RoleService:
             .where(
                 UserAppRole.user_id == user_id,
                 UserAppRole.app_id == app.id,
+                Role.is_active.is_(True),
             )
         )
 
         result = await db.execute(query)
 
         return list(result.scalars().all())
+
+    @staticmethod
+    async def sync_catalog(
+        db: AsyncSession,
+        app: App,
+        entries: list[RoleCatalogEntry],
+    ) -> tuple[list[Role], list[str]]:
+        """Upsert the app's declared roles and safely retire missing managed roles."""
+        existing_roles = list(await db.scalars(select(Role).where(Role.app_id == app.id)))
+        by_key = {role.name: role for role in existing_roles}
+        declared_keys = {entry.key for entry in entries}
+
+        for entry in entries:
+            role = by_key.get(entry.key)
+            if role is None:
+                db.add(Role(
+                    app_id=app.id,
+                    name=entry.key,
+                    display_name=entry.display_name,
+                    description=entry.description,
+                    is_active=True,
+                    managed_by_app=True,
+                ))
+            else:
+                role.display_name = entry.display_name
+                role.description = entry.description
+                role.is_active = True
+                role.managed_by_app = True
+
+        deactivated = []
+        for role in existing_roles:
+            if role.managed_by_app and role.name not in declared_keys and role.is_active:
+                role.is_active = False
+                deactivated.append(role.name)
+
+        await db.commit()
+        roles = await RoleService.list_for_app(db, app, include_inactive=True)
+        return roles, deactivated
 
     @staticmethod
     async def delete_role(db: AsyncSession, role: Role) -> None:

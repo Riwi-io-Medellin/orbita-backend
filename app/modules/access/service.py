@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.access.models import (
     Application,
+    ApplicationAccessPolicy,
     AuditLog,
     GlobalRole,
     application_global_roles,
@@ -75,7 +76,11 @@ class AccessService:
             select(Application.id)
             .join(application_global_roles, application_global_roles.c.application_id == Application.id)
             .join(user_global_roles, user_global_roles.c.global_role_id == application_global_roles.c.global_role_id)
-            .where(user_global_roles.c.user_id == user_id, Application.is_active.is_(True))
+            .where(
+                user_global_roles.c.user_id == user_id,
+                Application.is_active.is_(True),
+                Application.access_policy == ApplicationAccessPolicy.CATALOG.value,
+            )
         )
         app_role_ids = (
             select(Application.id)
@@ -90,7 +95,11 @@ class AccessService:
         direct_ids = (
             select(Application.id)
             .join(user_applications, user_applications.c.application_id == Application.id)
-            .where(user_applications.c.user_id == user_id, Application.is_active.is_(True))
+            .where(
+                user_applications.c.user_id == user_id,
+                Application.is_active.is_(True),
+                Application.access_policy == ApplicationAccessPolicy.CATALOG.value,
+            )
         )
         authorized_ids = union(legacy_ids, app_role_ids, direct_ids).subquery()
         result = await db.scalars(
@@ -106,36 +115,14 @@ class AccessService:
         return list(result)
 
     @staticmethod
-    async def create_application(
-        db: AsyncSession,
-        slug: str,
-        name: str,
-        description: str,
-        url: str,
-        icon: str | None,
-    ) -> Application:
-
-        application = Application(slug=slug, name=name, description=description, url=url, icon=icon)
-
-        db.add(application)
-
-        await db.commit()
-        await db.refresh(application)
-
-        return application
-
-    @staticmethod
-    async def set_application_status(db: AsyncSession, application: Application, is_active: bool) -> Application:
-        application.is_active = is_active
-
-        linked_app = await db.scalar(select(App).where(App.application_id == application.id))
-        if linked_app is not None:
-            linked_app.is_active = is_active
-
-        await db.commit()
-        await db.refresh(application)
-
-        return application
+    async def list_global_roles_for_user(db: AsyncSession, user_id: UUID) -> list[GlobalRole]:
+        result = await db.scalars(
+            select(GlobalRole)
+            .join(user_global_roles, user_global_roles.c.global_role_id == GlobalRole.id)
+            .where(user_global_roles.c.user_id == user_id)
+            .order_by(GlobalRole.name)
+        )
+        return list(result)
 
     @staticmethod
     async def grant_application_role(db: AsyncSession, application_id: UUID, global_role_id: UUID) -> None:

@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.session import get_db
-from app.modules.access.models import Application, AuditLog, GlobalRole
+from app.modules.access.models import Application, ApplicationAccessPolicy, AuditLog, GlobalRole
 from app.modules.access.schemas import (
     ApplicationCreate,
     ApplicationRead,
@@ -16,6 +16,7 @@ from app.modules.access.schemas import (
     GlobalRoleRead,
 )
 from app.modules.access.service import AccessService
+from app.modules.apps.application_lifecycle import ApplicationLifecycleService
 from app.modules.auth.dependencies import get_current_platform_admin, get_current_user
 from app.modules.users.models import User
 from app.schemas import ErrorDetail
@@ -32,9 +33,9 @@ router = APIRouter(
 
 @router.get("/", response_model=list[AuthorizedApplicationRead], summary="List apps the current user can see")
 async def list_applications(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    """The launcher: every active Application for which the caller holds at least one required global role."""
+    """The launcher. Catalog apps require a global/direct grant; SSO apps require an app-scoped role."""
     apps = await AccessService.authorized_applications(db, current_user.id)
-    return [{"id": str(app.id), "slug": app.slug, "name": app.name, "description": app.description, "url": app.url, "icon": app.icon} for app in apps]
+    return [{"id": str(app.id), "slug": app.slug, "name": app.name, "description": app.description, "url": app.url, "icon": app.icon, "access_policy": app.access_policy} for app in apps]
 
 
 @router.post(
@@ -86,7 +87,7 @@ async def create_application(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="slug already registered")
 
     try:
-        return await AccessService.create_application(
+        return await ApplicationLifecycleService.create_catalog_application(
             db,
             slug=payload.slug,
             name=payload.name,
@@ -111,12 +112,15 @@ async def update_application_status(
     payload: ApplicationStatusUpdate,
     db: AsyncSession = Depends(get_db),
 ):
-    """Toggling `is_active` to false hides this app from every user's launcher immediately (`GET /applications` filters on it), regardless of their global roles."""
+    """Toggling `is_active` to false hides this app from every user's launcher immediately. If it has an SSO client, that client is disabled in the same transaction."""
     application = await db.get(Application, application_id)
     if application is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
 
-    return await AccessService.set_application_status(db, application, payload.is_active)
+    updated_application, _ = await ApplicationLifecycleService.set_availability(
+        db, application=application, is_active=payload.is_active,
+    )
+    return updated_application
 
 
 @router.get(
@@ -137,17 +141,25 @@ async def list_global_roles(
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(get_current_platform_admin)],
     summary="Grant a global role access to an app",
-    responses={404: {"model": ErrorDetail, "description": "Application not found, or global role not found."}},
+    responses={
+        404: {"model": ErrorDetail, "description": "Application not found, or global role not found."},
+        409: {"model": ErrorDetail, "description": "SSO applications require an app-scoped role assignment."},
+    },
 )
 async def grant_application_role(
     application_id: UUID,
     global_role_id: UUID,
     db: AsyncSession = Depends(get_db),
 ):
-    """Links a global role to an app: any user holding this role will now see the app in their launcher. Idempotent."""
+    """Links a global role to a launcher-only app. SSO apps are role-provisioned through `/apps/{client_id}/roles/{role_id}/assign` instead."""
     application = await db.get(Application, application_id)
     if application is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
+    if application.access_policy == ApplicationAccessPolicy.SSO_ROLE.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="SSO applications require app-scoped role assignments",
+        )
 
     role = await db.get(GlobalRole, global_role_id)
     if role is None:

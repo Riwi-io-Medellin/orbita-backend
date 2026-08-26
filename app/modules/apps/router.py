@@ -19,6 +19,7 @@ from app.modules.apps.schemas import (
     UserAppRoleRead,
 )
 from app.modules.apps.service import AppService, RoleService
+from app.modules.apps.application_lifecycle import ApplicationLifecycleService
 from app.modules.users.schemas import BulkRoleAssignmentResult, BulkUserIds
 from app.schemas import ErrorDetail
 
@@ -61,7 +62,7 @@ async def create_app(
         )
 
     try:
-        app, raw_secret = await AppService.create_app(
+        app, raw_secret = await ApplicationLifecycleService.create_sso_application(
             db,
             client_id=payload.client_id,
             slug=payload.slug,
@@ -118,7 +119,10 @@ async def update_app_status(
             detail="App not found",
         )
 
-    return await AppService.set_active_status(db, app, payload.is_active)
+    _, updated_app = await ApplicationLifecycleService.set_availability(
+        db, app=app, is_active=payload.is_active,
+    )
+    return updated_app
 
 
 @router.post(
@@ -170,7 +174,7 @@ async def create_role(
     payload: RoleCreate,
     db: AsyncSession = Depends(get_db),
 ):
-    """Creates a role scoped to one app (e.g. "staff", "coder", "admin") that users can be assigned. Role names only need to be unique within the same app."""
+    """Legacy platform-admin role creation. Prefer the confidential `PUT /apps/{client_id}/role-catalog` synchronization so the consuming application remains the source of truth."""
     app = await AppService.get_by_client_id(db, client_id)
 
     if app is None:
@@ -305,7 +309,7 @@ async def list_roles(
     client_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Returns every role defined for this app."""
+    """Returns active roles defined for this app. Inactive roles are retained as history but cannot be newly assigned or authorize SSO."""
     app = await AppService.get_by_client_id(db, client_id)
 
     if app is None:

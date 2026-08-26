@@ -17,7 +17,7 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Completar en `.env`: `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET`, `MICROSOFT_TENANT_ID`, `JWT_SECRET`, `DATABASE_URL`.
+Completar en `.env`: `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET`, `MICROSOFT_TENANT_ID`, `JWT_SECRET`, `DATABASE_URL` y, para SSO, las claves RSA descritas en `SSO_INTEGRATION.md`.
 
 ## Ejecución
 
@@ -27,6 +27,12 @@ uvicorn app.main:app --reload
 ```
 
 Las migraciones de Alembic corren automáticamente al iniciar (no hace falta `alembic upgrade` manual).
+
+## Contrato API
+
+El contrato ejecutable está en `/docs` (Swagger), `/redoc` y `/openapi.json`. La guía completa de
+autenticación, respuestas y política de acceso está en [API_CONTRACT.md](API_CONTRACT.md).
+Las aplicaciones que consumen SSO deben seguir [SSO_CLIENT_CONTRACT.md](SSO_CLIENT_CONTRACT.md).
 
 ## Endpoints principales
 

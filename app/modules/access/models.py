@@ -1,4 +1,5 @@
 import uuid
+from enum import Enum
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, String, Table, Column, Text, func
@@ -6,6 +7,13 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.base import Base
+
+
+class ApplicationAccessPolicy(str, Enum):
+    """How an application becomes available in the Orbita launcher."""
+
+    CATALOG = "catalog"
+    SSO_ROLE = "sso_role"
 
 
 user_global_roles = Table(
@@ -44,6 +52,11 @@ class Application(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     url: Mapped[str] = mapped_column(String(2048), nullable=False)
     icon: Mapped[str | None] = mapped_column(String(50))
+    access_policy: Mapped[str] = mapped_column(
+        String(32),
+        server_default=ApplicationAccessPolicy.CATALOG.value,
+        nullable=False,
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, server_default="true", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

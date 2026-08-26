@@ -1,7 +1,7 @@
 import uuid
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class AppCreate(BaseModel):
@@ -111,6 +111,10 @@ class RoleRead(BaseModel):
     id: uuid.UUID
     app_id: uuid.UUID
     name: str
+    display_name: str
+    description: str | None
+    is_active: bool
+    managed_by_app: bool
 
     model_config = {
         "from_attributes": True,
@@ -119,8 +123,63 @@ class RoleRead(BaseModel):
                 "id": "3d338516-48ff-4a01-a607-0501be303935",
                 "app_id": "de3008c1-3d48-48a5-b30a-94f395a45306",
                 "name": "staff",
+                "display_name": "Staff",
+                "description": "Personal interno",
+                "is_active": True,
+                "managed_by_app": True,
             }
         },
+    }
+
+
+class RoleCatalogEntry(BaseModel):
+    """An app-owned role declaration. `key` is the exact JWT value consumed by that app."""
+
+    key: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9][a-z0-9._-]*$")
+    display_name: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=500)
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {"key": "team_leader", "display_name": "Team Leader", "description": "Gestiona su equipo."}
+        }
+    }
+
+
+class RoleCatalogSyncRequest(BaseModel):
+    """Confidential client request; absent previously app-managed roles become inactive, never deleted."""
+
+    client_secret: str = Field(min_length=1, max_length=512)
+    roles: list[RoleCatalogEntry] = Field(max_length=100)
+
+    @model_validator(mode="after")
+    def unique_role_keys(self):
+        keys = [role.key for role in self.roles]
+        if len(keys) != len(set(keys)):
+            raise ValueError("roles must not contain duplicate keys")
+        return self
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "client_secret": "stored-server-side-only",
+                "roles": [RoleCatalogEntry.model_config["json_schema_extra"]["example"]],
+            }
+        }
+    }
+
+
+class RoleCatalogSyncResult(BaseModel):
+    roles: list[RoleRead]
+    deactivated_role_keys: list[str]
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "roles": [RoleRead.model_config["json_schema_extra"]["example"]],
+                "deactivated_role_keys": ["legacy_role"],
+            }
+        }
     }
 
 
