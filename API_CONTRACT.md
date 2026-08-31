@@ -103,6 +103,7 @@ All endpoints in this section require a platform-admin session.
 | POST | `/users/{user_id}/global-roles/{role_id}` | Grants one global role. Applies only to catalog application access. |
 | DELETE | `/users/{user_id}/global-roles/{role_id}` | Revokes one global role. |
 | GET | `/users/{user_id}/global-roles` | Lists the global roles currently assigned to one user. |
+| GET | `/users/{user_id}/external-identities` | Lists the external login providers linked to the canonical user. It returns provider name/code, provider-reported email and last activity; it never exposes external subjects or tenant identifiers. |
 | POST | `/users/bulk/global-roles/{role_id}/grant` | Grants one global role to 1–500 users. |
 | POST | `/users/bulk/global-roles/{role_id}/revoke` | Revokes one global role from 1–500 users. |
 | POST | `/users/{user_id}/applications/{application_id}` | Directly grants one `catalog` app. `409` for an SSO app. |
