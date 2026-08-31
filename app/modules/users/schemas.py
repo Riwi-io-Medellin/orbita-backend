@@ -31,6 +31,15 @@ class UserAdminRead(BaseModel):
     }
 
 
+class UserExternalIdentityRead(BaseModel):
+    """Administrative, non-secret summary of one linked external account."""
+
+    provider_code: str
+    provider_name: str
+    provider_email: str | None
+    last_seen_at: datetime | None
+
+
 class UserStatusUpdate(BaseModel):
     is_active: bool
 

@@ -1,6 +1,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.session import get_db
@@ -10,6 +11,7 @@ from app.modules.access.service import AccessService
 from app.modules.apps.schemas import AppRoleRead
 from app.modules.apps.service import RoleService
 from app.modules.auth.dependencies import get_current_platform_admin
+from app.modules.identity.models import ExternalIdentity, Provider
 from app.modules.users.models import User
 from app.modules.users.schemas import (
     BulkRoleAssignmentResult,
@@ -17,6 +19,7 @@ from app.modules.users.schemas import (
     BulkUserIds,
     BulkUserStatusResult,
     UserAdminRead,
+    UserExternalIdentityRead,
     UserStatusUpdate,
 )
 from app.modules.users.service import UserService
@@ -283,6 +286,42 @@ async def list_user_global_roles(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     return await AccessService.list_global_roles_for_user(db, user_id)
+
+
+@router.get(
+    "/{user_id}/external-identities",
+    response_model=list[UserExternalIdentityRead],
+    summary="List a user's linked authentication providers",
+    responses={404: {"model": ErrorDetail, "description": "User not found."}},
+)
+async def list_user_external_identities(
+    user_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Shows a platform admin which login providers are linked to a canonical Orbita user.
+
+    External provider subjects and tenant identifiers are deliberately not exposed: they are
+    correlation internals, not data an administrator needs to operate the account.
+    """
+    user = await UserService.get_user_by_id(db, user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    rows = await db.execute(
+        select(Provider.code, Provider.name, ExternalIdentity.provider_email, ExternalIdentity.last_seen_at)
+        .join(ExternalIdentity, ExternalIdentity.provider_id == Provider.id)
+        .where(ExternalIdentity.user_id == user_id)
+        .order_by(Provider.name)
+    )
+    return [
+        UserExternalIdentityRead(
+            provider_code=code,
+            provider_name=name,
+            provider_email=email,
+            last_seen_at=last_seen_at,
+        )
+        for code, name, email, last_seen_at in rows
+    ]
 
 
 @router.delete(
