@@ -44,7 +44,7 @@ async def get_current_user(
             detail="User not found",
         )
 
-    if not user.is_active:
+    if not user.is_active or user.deleted_at is not None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User is inactive",

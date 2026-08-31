@@ -1,3 +1,4 @@
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -7,7 +8,12 @@ from app.config.settings import settings
 
 from app.modules.users.models import User
 
-from app.modules.auth.microsoft import oauth, ms_claims_options
+from app.modules.auth.microsoft import (
+    MicrosoftTenantNotAllowedError,
+    ms_claims_options,
+    oauth,
+    validate_microsoft_claims,
+)
 
 from app.modules.auth.dependencies import get_current_user
 
@@ -30,8 +36,11 @@ from app.modules.auth.jwt import (
     decode_app_token,
 )
 from app.modules.auth.schemas import (
+    AuthenticationProvidersResponse,
     IntrospectRequest,
     IntrospectResponse,
+    MoodleLoginRequest,
+    MoodlePasswordResetRequest,
     PasswordLoginRequest,
     RegisterRequest,
     TokenExchangeRequest,
@@ -41,6 +50,14 @@ from app.modules.auth.service import (
     AppSessionService,
     AuthorizationCodeService,
     build_authorize_redirect,
+)
+from app.modules.auth.moodle import MoodleClient, MoodleCredentialsError, MoodleUnavailableError
+from app.modules.auth.rate_limit import MoodleLoginRateLimiter, MoodleRateLimitedError
+from app.modules.identity.service import (
+    IdentityLinkConflictError,
+    IdentityResolver,
+    InvalidInstitutionalEmailError,
+    ProviderUnavailableError,
 )
 
 from fastapi.responses import RedirectResponse, JSONResponse
@@ -55,6 +72,7 @@ router = APIRouter(
 _IS_PRODUCTION = settings.environment == "production"
 _COOKIE_SECURE = _IS_PRODUCTION
 _COOKIE_SAMESITE = "none" if _IS_PRODUCTION else "lax"
+logger = logging.getLogger(__name__)
 
 
 def _set_access_token_cookie(response, access_token: str) -> None:
@@ -87,10 +105,36 @@ async def _get_optional_current_user(
 
     user = await UserService.get_user_by_id(db, UUID(sub))
 
-    if user is None or not user.is_active:
+    if user is None or not user.is_active or user.deleted_at is not None:
         return None
 
     return user
+
+
+def _user_is_unavailable(user: User) -> bool:
+    return not user.is_active or user.deleted_at is not None
+
+
+async def _issue_central_session(
+    db: AsyncSession,
+    user: User,
+    request: Request,
+    response: JSONResponse | RedirectResponse,
+    *,
+    event: str = "login",
+) -> JSONResponse | RedirectResponse:
+    if _user_is_unavailable(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tu cuenta se encuentra deshabilitada. Contacta a un administrador.",
+        )
+
+    await AccessService.ensure_default_role(db, user)
+    roles = await AccessService.role_names(db, user.id)
+    access_token = create_access_token(user_id=str(user.id), email=user.email, roles=roles)
+    await AccessService.audit(db, event=event, user_id=user.id, request=request)
+    _set_access_token_cookie(response, access_token)
+    return response
 
 
 @router.get(
@@ -100,10 +144,144 @@ async def _get_optional_current_user(
 )
 async def redirect_to_microsoft_login(request: Request):
     """Kicks off the central (Orbita's own) Microsoft OAuth login flow. On success, Microsoft redirects back to `GET /auth/callback`."""
+    if not settings.enable_microsoft_login:
+        return RedirectResponse(
+            url=f"{settings.frontend_url}/auth/callback?error=provider_unavailable",
+            status_code=302,
+        )
     return await oauth.microsoft.authorize_redirect(
         request,
         settings.microsoft_redirect_uri,
     )
+
+
+@router.get(
+    "/providers",
+    response_model=AuthenticationProvidersResponse,
+    summary="List currently available central authentication methods",
+)
+async def authentication_providers(db: AsyncSession = Depends(get_db)):
+    moodle = await IdentityResolver.get_provider(db, "moodle")
+    microsoft = await IdentityResolver.get_provider(db, "microsoft")
+    return AuthenticationProvidersResponse(
+        moodle=bool(moodle and moodle.active and MoodleClient(settings).configured),
+        microsoft=bool(microsoft and microsoft.active and settings.enable_microsoft_login),
+        local=settings.enable_local_login,
+    )
+
+
+@router.post(
+    "/moodle/login",
+    summary="Central login via Moodle credentials",
+    responses={
+        401: {"model": ErrorDetail, "description": "Invalid Moodle credentials."},
+        403: {"model": ErrorDetail, "description": "No valid institutional email, or disabled account."},
+        409: {"model": ErrorDetail, "description": "External identity linking conflict."},
+        429: {"model": ErrorDetail, "description": "Too many attempts."},
+        503: {"model": ErrorDetail, "description": "Moodle is disabled, unavailable, or misconfigured."},
+    },
+)
+async def moodle_login(
+    payload: MoodleLoginRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Authenticates with Moodle without persisting the submitted password or Moodle token."""
+    moodle_provider = await IdentityResolver.get_provider(db, "moodle")
+    if moodle_provider is None or not moodle_provider.active or not MoodleClient(settings).configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="El servicio de autenticación no está disponible temporalmente. Intenta nuevamente.",
+        )
+    try:
+        await MoodleLoginRateLimiter.ensure_allowed(db, settings, payload.username, request)
+    except MoodleRateLimitedError:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Demasiados intentos. Intenta nuevamente más tarde.",
+        )
+
+    client = MoodleClient(settings)
+    try:
+        moodle_user = await client.authenticate(payload.username, payload.password)
+    except MoodleCredentialsError:
+        await MoodleLoginRateLimiter.record_failure(db, settings, payload.username, request)
+        await AccessService.audit(db, event="login.moodle_failed", request=request)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenciales de Moodle inválidas")
+    except MoodleUnavailableError:
+        await AccessService.audit(db, event="login.moodle_unavailable", request=request)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="El servicio de autenticación no está disponible temporalmente. Intenta nuevamente.",
+        )
+
+    try:
+        resolution = await IdentityResolver.resolve(
+            db,
+            settings=settings,
+            provider_code="moodle",
+            provider_user_id=moodle_user.user_id,
+            provider_tenant_id=None,
+            provider_email=moodle_user.email,
+            full_name=moodle_user.full_name,
+            activate_new_user=True,
+        )
+    except ProviderUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="El servicio de autenticación no está disponible temporalmente. Intenta nuevamente.",
+        )
+    except InvalidInstitutionalEmailError:
+        await AccessService.audit(db, event="identity.moodle_invalid_email", request=request)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Moodle no devolvió un correo válido para vincular tu cuenta. Contacta a un administrador.",
+        )
+    except IdentityLinkConflictError:
+        await AccessService.audit(db, event="identity.link_conflict", request=request, details={"provider": "moodle"})
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No pudimos vincular automáticamente tu cuenta institucional. Contacta a un administrador para validar tu acceso.",
+        )
+
+    await MoodleLoginRateLimiter.clear_success(db, settings, payload.username, request)
+    for event, details in resolution.events:
+        await AccessService.audit(db, event=event, user_id=resolution.user.id, request=request, details=details)
+    response = JSONResponse(content={"message": "Authenticated"})
+    return await _issue_central_session(db, resolution.user, request, response, event="login.moodle")
+
+
+@router.post(
+    "/moodle/password-reset",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Request a Moodle password-reset email",
+    responses={503: {"model": ErrorDetail, "description": "Moodle is unavailable or disabled."}},
+)
+async def request_moodle_password_reset(
+    payload: MoodlePasswordResetRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Proxies Moodle's no-login reset service without storing credentials or tokens."""
+    moodle_provider = await IdentityResolver.get_provider(db, "moodle")
+    if moodle_provider is None or not moodle_provider.active or not MoodleClient(settings).configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="El servicio de autenticación no está disponible temporalmente. Intenta nuevamente.",
+        )
+    try:
+        await MoodleClient(settings).request_password_reset(
+            identifier=payload.identifier.strip(),
+            identifier_type=payload.identifier_type,
+        )
+    except MoodleUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="El servicio de autenticación no está disponible temporalmente. Intenta nuevamente.",
+        )
+
+    await AccessService.audit(db, event="moodle.password_reset_requested", request=request)
+    return {"message": "Si los datos coinciden con una cuenta Moodle, recibirás instrucciones para restablecer tu contraseña."}
 
 @router.get(
     "/authorize",
@@ -232,7 +410,7 @@ async def exchange_code_for_app_token(
 
     user = await UserService.get_user_by_id(db, code_row.user_id)
 
-    if user is None or not user.is_active:
+    if user is None or _user_is_unavailable(user):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User no longer available",
@@ -357,53 +535,76 @@ async def handle_microsoft_callback(
     stashed by `/auth/authorize`.
     Never raises to the caller: on any OAuth/upsert failure it redirects to the frontend with `?error=...`.
     """
+    if not settings.enable_microsoft_login:
+        return RedirectResponse(
+            url=f"{settings.frontend_url}/auth/callback?error=provider_unavailable",
+            status_code=302,
+        )
+
     try:
         token = await oauth.microsoft.authorize_access_token(
             request,
             claims_options=ms_claims_options,
         )
-    except Exception as exc:
-        print(f"Microsoft OAuth callback failed: {exc!r}")
+    except Exception:
+        logger.warning("Microsoft OAuth callback failed")
         return RedirectResponse(
             url=f"{settings.frontend_url}/auth/callback?error=authentication_failed"
         )
-
-    microsoft_user = token["userinfo"]
 
     try:
-        user = await UserService.upsert_user(
+        tenant_id, oid, email, full_name = validate_microsoft_claims(token["userinfo"])
+        resolution = await IdentityResolver.resolve(
             db=db,
-            microsoft_id=microsoft_user["oid"],
-            email=microsoft_user["preferred_username"],
-            full_name=microsoft_user["name"],
+            settings=settings,
+            provider_code="microsoft",
+            provider_user_id=oid,
+            provider_tenant_id=tenant_id,
+            provider_email=email,
+            full_name=full_name,
+            activate_new_user=False,
         )
-    except Exception as exc:
-        print(f"Microsoft OAuth user upsert failed: {exc!r}")
+    except ProviderUnavailableError:
+        return RedirectResponse(
+            url=f"{settings.frontend_url}/auth/callback?error=provider_unavailable",
+            status_code=302,
+        )
+    except IdentityLinkConflictError:
+        await AccessService.audit(db, event="identity.link_conflict", request=request, details={"provider": "microsoft"})
+        return RedirectResponse(
+            url=f"{settings.frontend_url}/auth/callback?error=identity_link_conflict",
+            status_code=302,
+        )
+    except MicrosoftTenantNotAllowedError as exc:
+        await AccessService.audit(
+            db,
+            event="MICROSOFT_TENANT_NOT_ALLOWED",
+            request=request,
+            details={"tenant_id": exc.tenant_id},
+        )
         return RedirectResponse(
             url=f"{settings.frontend_url}/auth/callback?error=authentication_failed"
         )
+    except (InvalidInstitutionalEmailError, ValueError):
+        logger.info("Microsoft identity claims or email were rejected")
+        return RedirectResponse(
+            url=f"{settings.frontend_url}/auth/callback?error=authentication_failed"
+        )
+
+    user = resolution.user
+    for event, details in resolution.events:
+        await AccessService.audit(db, event=event, user_id=user.id, request=request, details=details)
 
     await AccessService.bootstrap_platform_admins(
         db,
         settings.platform_admin_emails.split(","),
     )
 
-    if not user.is_active:
+    if _user_is_unavailable(user):
         await AccessService.audit(db, event="login.inactive", user_id=user.id, request=request)
         return RedirectResponse(
             url=f"{settings.frontend_url}/auth/callback?error=user_inactive"
         )
-
-    await AccessService.ensure_default_role(db, user)
-    roles = await AccessService.role_names(db, user.id)
-
-    access_token = create_access_token(
-        user_id=str(user.id),
-        email=user.email,
-        roles=roles,
-    )
-
-    await AccessService.audit(db, event="login", user_id=user.id, request=request)
 
     pending = request.session.pop("pending_authorize", None)
 
@@ -427,8 +628,7 @@ async def handle_microsoft_callback(
             status_code=302,
         )
 
-    _set_access_token_cookie(response, access_token)
-    return response
+    return await _issue_central_session(db, user, request, response, event="login.microsoft")
 
 @router.post(
     "/login",
@@ -447,6 +647,9 @@ async def password_login(
     Local-account login for users with a `password_hash` set. Valid credentials only receive a central
     session cookie when the account is active.
     """
+    if not settings.enable_local_login:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Local login is disabled")
+
     user = await UserService.get_by_email(db, str(payload.email))
 
     if user is None or not verify_password(payload.password, user.password_hash):
@@ -461,7 +664,7 @@ async def password_login(
             detail="Invalid email or password",
         )
 
-    if not user.is_active:
+    if _user_is_unavailable(user):
         await AccessService.audit(
             db,
             event="login.inactive",
@@ -470,21 +673,11 @@ async def password_login(
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User is inactive",
+            detail="Tu cuenta se encuentra deshabilitada. Contacta a un administrador.",
         )
 
-    roles = await AccessService.role_names(db, user.id)
-    access_token = create_access_token(
-        user_id=str(user.id),
-        email=user.email,
-        roles=roles,
-    )
-
-    await AccessService.audit(db, event="login", user_id=user.id, request=request)
-
     response = JSONResponse(content={"message": "Authenticated"})
-    _set_access_token_cookie(response, access_token)
-    return response
+    return await _issue_central_session(db, user, request, response, event="login.local")
 
 # Not wired up yet - uncomment to enable local account self-registration.
 # @router.post("/register")

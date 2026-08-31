@@ -42,6 +42,9 @@ client changes both records atomically.
 | --- | --- | --- | --- |
 | GET | `/auth/login` | Public | Starts Microsoft OAuth; `302` to Microsoft. |
 | GET | `/auth/callback` | Public | Microsoft callback; establishes the central cookie and redirects to the frontend or pending SSO client. |
+| GET | `/auth/providers` | Public | Returns which of Moodle, Microsoft and local login are currently available. Provider availability is enforced by the backend. |
+| POST | `/auth/moodle/login` | Public | Body: `{username,password}`. Validates credentials through Moodle without persisting its password or token, resolves the canonical Orbita user, and sets the central cookie. Returns `429` for throttling and `503` when Moodle is disabled/unavailable. |
+| POST | `/auth/moodle/password-reset` | Public | Body: `{identifier,identifier_type}` where `identifier_type` is `username` or `email`. Requests Moodle's password-reset flow through Orbita without a Moodle token and always returns a generic confirmation when accepted. |
 | POST | `/auth/login` | Public | Local email/password login. Sets the central cookie. `401` invalid credentials; `403` inactive user. |
 | GET | `/auth/me` | Session | Current profile and global roles. App-scoped roles are intentionally excluded. |
 | POST | `/auth/logout` | Public/session | Clears the central cookie and revokes the caller's recorded app sessions. Always succeeds. |

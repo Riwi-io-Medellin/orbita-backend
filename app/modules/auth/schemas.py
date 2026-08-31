@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, EmailStr, Field
 
 
@@ -10,6 +12,22 @@ class PasswordLoginRequest(BaseModel):
             "example": {"email": "user@example.com", "password": "correct-horse-battery-staple"}
         }
     }
+
+
+class MoodleLoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=255)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class MoodlePasswordResetRequest(BaseModel):
+    identifier: str = Field(min_length=1, max_length=255)
+    identifier_type: Literal["username", "email"]
+
+
+class AuthenticationProvidersResponse(BaseModel):
+    moodle: bool
+    microsoft: bool
+    local: bool
 
 
 class RegisterRequest(BaseModel):

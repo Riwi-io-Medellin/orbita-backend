@@ -42,6 +42,8 @@ python-dotenv==1.2.2
 python-jose==3.5.0
 python-multipart==0.0.32
 PyYAML==6.0.3
+pytest==9.1.1
+pytest-asyncio==1.4.0
 rich==15.0.0
 rich-toolkit==0.20.3
 rignore==0.8.0
