@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 
@@ -216,9 +216,7 @@ class UserService:
         email: str,
     ) -> User | None:
 
-        query = select(User).where(
-            User.email == email.lower()
-        )
+        query = select(User).where(func.lower(func.btrim(User.email)) == email.strip().lower())
 
         result = await db.execute(query)
 

@@ -42,7 +42,7 @@ OPENAPI_TAGS = [
     {
         "name": "Authentication",
         "description": (
-            "Central login (Microsoft OAuth or local email/password), the central session cookie, "
+            "Central login (Moodle credentials, Microsoft OAuth when configured, or temporary local email/password), the central session cookie, "
             "and the SSO handoff (`/authorize` + `/token`) other apps use to get a per-app JWT."
         ),
     },
@@ -82,7 +82,7 @@ app = FastAPI(
     version="1.0.0",
     description=(
         "Orbita is Riwi's own backend **and** the central SSO identity provider for other Riwi apps. "
-        "Users authenticate here (Microsoft OAuth or local email/password) and get a central session "
+        "Users authenticate here (Moodle, Microsoft OAuth when configured, or temporary local email/password) and get a central session "
         "cookie for Orbita itself; other apps redirect here for a handoff and receive a short-lived, "
         "role-bearing JWT scoped to that app. A platform admin manages who can log in, "
         "which apps each user can see, and what role they hold inside each app. See `API_CONTRACT.md` "
