@@ -35,6 +35,9 @@ class App(Base):
         nullable=False,
     )
 
+    previous_client_secret_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    previous_secret_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     name: Mapped[str] = mapped_column(
         String(255),
         nullable=False,

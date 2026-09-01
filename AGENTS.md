@@ -5,7 +5,8 @@
 Órbita es el portal central de identidad, acceso y lanzamiento de aplicaciones del ecosistema Riwi. Este repositorio contiene su API y actúa en dos papeles relacionados, pero distintos:
 
 1. Backend de Órbita: autentica usuarios, mantiene la sesión central, administra usuarios, aplicaciones, permisos y auditoría.
-2. Proveedor SSO interno: entrega a aplicaciones registradas una identidad verificable y los roles que esa persona tiene específicamente en esa aplicación.
+2. Broker de identidad: resuelve cuentas externas de Moodle y Microsoft hacia una sola identidad canónica de Órbita, sin persistir contraseñas ni tokens de Moodle.
+3. Proveedor SSO interno: entrega a aplicaciones registradas una identidad verificable y los roles que esa persona tiene específicamente en esa aplicación.
 
 Órbita no decide qué puede hacer un rol dentro de TeamLead, Riwi Calls u otra aplicación. Cada aplicación es dueña de la semántica de sus roles; Órbita es dueña de la identidad, la asignación y la entrega segura de esos roles.
 
@@ -22,8 +23,9 @@ Antes de cambiar contratos de autenticación o autorización, leer `API_CONTRACT
 - Cookies HTTP-only para la sesión central.
 - Uvicorn como servidor ASGI.
 - Railway como entorno habitual de despliegue.
+- Pytest y pytest-asyncio para la suite automatizada disponible en `tests/`.
 
-No hay una suite de pruebas automatizadas configurada actualmente. Una funcionalidad sensible nueva debe incluir pruebas cuando se introduzca la infraestructura necesaria; no usar esta ausencia como razón para omitir verificación.
+La cobertura actual se concentra en identidad externa, constraints y clientes de proveedor; todavía faltan pruebas de integración amplias para SSO, acceso y administración. Toda lógica nueva o corregida debe añadir la prueba correspondiente, especialmente para autorización y fallos de seguridad.
 
 ## Arquitectura
 
@@ -35,12 +37,14 @@ app/
 ├── config/                  Settings y validación de variables de entorno
 ├── database/                Base SQLAlchemy, engine y sesiones async
 └── modules/
-    ├── auth/                login local/Microsoft, sesión central y protocolo SSO
+    ├── auth/                login local/Moodle/Microsoft, sesión central y protocolo SSO
+    ├── identity/            proveedores y correlación hacia el usuario canónico
     ├── users/               ciclo de vida y administración de usuarios
     ├── apps/                clientes SSO, redirect URIs y roles por aplicación
     └── access/              catálogo, roles globales, resolución de acceso y auditoría
 alembic/                     migraciones del esquema
 clients/                     adaptadores de referencia para aplicaciones consumidoras
+tests/                       pruebas de identidad, proveedores y constraints
 ```
 
 Dentro de cada módulo:
@@ -73,12 +77,15 @@ El frontend puede ocultar opciones, pero nunca es un límite de seguridad. Toda 
 
 ## Flujo de sesión de Órbita
 
-Órbita permite dos formas de iniciar la misma sesión central:
+Órbita permite tres formas de iniciar la misma sesión central:
 
 - correo y contraseña mediante `POST /api/auth/login`;
-- Microsoft mediante `GET /api/auth/login` y el callback OAuth.
+- credenciales Moodle mediante `POST /api/auth/moodle/login`, sin conservar contraseña ni token Moodle;
+- Microsoft mediante `GET /api/auth/login` y el callback OAuth, solo cuando el proveedor está habilitado.
 
-Al completar cualquiera, el backend firma un JWT central RS256 y lo guarda en la cookie HTTP-only `access_token`. El navegador nunca necesita leer el token. `/api/auth/me` reconstruye el usuario actual y sus roles globales. En producción, las cookies deben permanecer `Secure` y con la política `SameSite` necesaria para los dominios desplegados.
+`GET /api/auth/providers` es la fuente de verdad para los métodos disponibles. El frontend debe respetarla y no ofrecer un proveedor deshabilitado. Moodle puede activar una cuenta nueva según la política configurada; Microsoft crea nuevas identidades inactivas. La correlación automática por correo debe cumplir `ALLOWED_IDENTITY_EMAIL_DOMAINS` y la excepción explícita de Moodle, y nunca puede unir dos personas ante una colisión ambigua.
+
+Al completar cualquiera, el backend firma un JWT central RS256 y lo guarda en la cookie HTTP-only `__Host-orbita_access` (en desarrollo: `access_token`). El navegador nunca necesita leer el token. `/api/auth/me` reconstruye el usuario actual y sus roles globales. En producción la cookie usa `Secure` y `SameSite=None` mientras frontend/backend tengan dominios Railway distintos; toda mutación de la SPA usa el CSRF ligado a sesión de `/api/auth/csrf`.
 
 No almacenar tokens o secretos en logs, respuestas de error ni documentación versionada. La clave privada RSA vive únicamente en el backend; el público consume JWKS.
 
@@ -101,7 +108,7 @@ Invariantes que no se negocian:
 - `client_secret` se muestra una sola vez, se persiste únicamente como hash y jamás se expone al frontend.
 - Los tokens son RS256; no permitir downgrade ni algoritmos configurables desde el request.
 - `aud` aísla tokens entre aplicaciones.
-- La revocación inmediata se consulta en `/api/auth/introspect`; sin introspección, el límite es la expiración del JWT.
+- La revocación inmediata se consulta en `/api/auth/introspect`; valida disponibilidad actual de app/usuario y roles exactos. Sin introspección, el límite es la expiración del JWT.
 - Un rol inactivo no puede asignarse ni autorizar SSO. La sincronización del catálogo desactiva roles ausentes, pero conserva asignaciones históricas.
 
 ## Base de datos y migraciones
@@ -140,6 +147,10 @@ Antes de crear una abstracción, confirmar que separa una responsabilidad o una 
 - Evitar consultas N+1 y cargar únicamente los datos necesarios.
 - No añadir dependencias sin justificar por qué el stack actual no resuelve el problema.
 - Nunca modificar `.env` ni versionar credenciales, URLs privadas, claves PEM o secretos de Railway.
+- No dejar `echo=True`, payloads de autenticación ni parámetros SQL sensibles en logs de producción.
+- Todo login y recuperación de contraseña debe tener throttling persistente o compartido entre réplicas; no añadir rate limit solo en memoria.
+- Una mutación autenticada por cookie necesita una defensa CSRF deliberada. CORS no es una defensa CSRF.
+- `introspect` y el canje de código deben validar el estado actual de app, usuario, sesión y contrato de audiencia según la semántica prometida; documentar con precisión qué revocaciones son inmediatas.
 
 ## Cómo trabajar
 
@@ -159,6 +170,7 @@ Verificación mínima antes de entregar:
 ```bash
 python -m compileall app
 python -m alembic heads
+python -m pytest -q
 ```
 
 Además:
@@ -167,6 +179,18 @@ Además:
 - si cambió persistencia, aplicar `alembic upgrade head` contra una base desechable y comprobar upgrade/downgrade razonable;
 - si cambió SSO, probar happy path y fallos de `state`, código expirado/reutilizado, `redirect_uri`, secreto, audiencia, usuario/rol inactivo y revocación;
 - si se agregan tests, ejecutarlos completos antes de entregar.
+
+## Documentación viva obligatoria
+
+La documentación forma parte de la definición de terminado. Después de cada cambio de lógica, contrato, esquema, seguridad, proveedor, configuración o comportamiento observable, actualizar en el mismo cambio:
+
+- schemas/descripciones OpenAPI y `API_CONTRACT.md` para APIs y reglas generales;
+- `SSO_CLIENT_CONTRACT.md`, `SSO_INTEGRATION.md` y `clients/` para cualquier cambio consumible por aplicaciones;
+- `README.md` y `.env.example` para instalación, dependencias, ejecución o variables;
+- este `AGENTS.md` y el `AGENTS.md` raíz si cambió el contexto estable o una regla de trabajo;
+- migraciones y pruebas cuando cambió persistencia o lógica.
+
+No asumir que una edición “solo interna” carece de impacto: verificar explícitamente contratos, ejemplos, códigos de estado, seguridad, observabilidad y operación. Si no se actualiza un documento, debe ser porque se revisó y sigue siendo correcto.
 
 ## Regla de entrega
 

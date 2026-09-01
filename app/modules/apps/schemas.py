@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -130,6 +131,13 @@ class RoleRead(BaseModel):
             }
         },
     }
+
+
+class AppSecretRotated(AppRead):
+    """The new secret is returned exactly once; the prior secret has a short grace period."""
+
+    client_secret: str
+    previous_secret_expires_at: datetime
 
 
 class RoleCatalogEntry(BaseModel):

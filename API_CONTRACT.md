@@ -7,7 +7,8 @@ when looking at individual routes.
 ## Authentication and response conventions
 
 - **Public** endpoints do not need a credential.
-- **Session** endpoints require Orbita's `access_token` HTTP-only cookie. Browser requests must use
+- **Session** endpoints require Orbita's HTTP-only access cookie (`__Host-orbita_access` in production;
+  `access_token` in development). Browser requests must use
   credentials so the cookie is sent.
 - **Platform admin** endpoints additionally require `is_platform_admin=true` on that user.
 - **Client credentials** endpoints are called server-to-server with `client_id` and `client_secret`
@@ -46,14 +47,22 @@ client changes both records atomically.
 | POST | `/auth/moodle/login` | Public | Body: `{username,password}`. Validates credentials through Moodle without persisting its password or token, resolves the canonical Orbita user, and sets the central cookie. Returns `429` for throttling and `503` when Moodle is disabled/unavailable. |
 | POST | `/auth/moodle/password-reset` | Public | Body: `{identifier,identifier_type}` where `identifier_type` is `username` or `email`. Requests Moodle's password-reset flow through Orbita without a Moodle token and always returns a generic confirmation when accepted. |
 | POST | `/auth/login` | Public | Local email/password login. Sets the central cookie. `401` invalid credentials; `403` inactive user. |
+| GET | `/auth/csrf` | Session | Returns a short-lived, session-bound token for `X-CSRF-Token` on cookie-authenticated mutations. |
 | GET | `/auth/me` | Session | Current profile and global roles. App-scoped roles are intentionally excluded. |
 | POST | `/auth/logout` | Public/session | Clears the central cookie and revokes the caller's recorded app sessions. Always succeeds. |
 | GET | `/auth/authorize` | Public/session | Starts an authorization-code SSO handoff. Query: `client_id`, exact registered `redirect_uri`, `state` (16–512 chars). Redirects with `code` and `state`; `403` if the user has no app role. |
 | GET | `/auth/resume` | Public/session | Continues the handoff saved by `/auth/authorize` after central login. |
 | POST | `/auth/token` | Client credentials | Exchanges a single-use, ~60-second code for a 30-minute RS256 JWT. Body: `code`, `client_id`, `client_secret`, `redirect_uri`. |
-| POST | `/auth/introspect` | Client credentials | Body: `token`, `client_id`, `client_secret`. Returns `200 {active:false}` for revoked, expired or wrong-audience tokens. |
+| POST | `/auth/introspect` | Client credentials | Body: `token`, `client_id`, `client_secret`. Returns `200 {active:false}` for revoked, expired, wrong-audience, unavailable app/user, or changed roles. |
+| POST | `/apps/{client_id}/rotate-secret` | Platform admin + CSRF | Returns the replacement secret once; the previous secret expires in 15 minutes. |
 
 The token's `aud` equals `client_id`; clients must verify signature, expiration and audience using JWKS.
+
+Existing-token semantics in v1: app-session records make expiry and central logout observable through
+`/auth/introspect`. User/app deactivation and role assignment changes invalidate introspection
+immediately. Consumers must bound local sessions to token
+expiry unless a stronger revalidation policy is agreed. New token issuance must always enforce current
+user, app and active-role state; any implementation that does not is a contract defect.
 
 ## Launcher and audit
 

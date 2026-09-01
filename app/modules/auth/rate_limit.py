@@ -23,8 +23,8 @@ class MoodleLoginRateLimiter:
     def _keys(settings: Settings, username: str, request: Request) -> tuple[str, str]:
         ip_address = request.client.host if request.client else "unknown"
         return (
-            _hash_value(username.strip().lower(), settings.jwt_secret),
-            _hash_value(ip_address, settings.jwt_secret),
+            _hash_value(username.strip().lower(), settings.rate_limit_signing_secret),
+            _hash_value(ip_address, settings.rate_limit_signing_secret),
         )
 
     @staticmethod
@@ -51,6 +51,11 @@ class MoodleLoginRateLimiter:
 
     @staticmethod
     async def record_failure(db: AsyncSession, settings: Settings, username: str, request: Request) -> None:
+        await MoodleLoginRateLimiter.record_attempt(db, settings, username, request)
+
+    @staticmethod
+    async def record_attempt(db: AsyncSession, settings: Settings, username: str, request: Request) -> None:
+        """Record an unauthenticated action subject to the same privacy-preserving limits."""
         subject_hash, ip_hash = MoodleLoginRateLimiter._keys(settings, username, request)
         db.add(MoodleLoginFailure(subject_hash=subject_hash, ip_hash=ip_hash))
         await db.commit()
