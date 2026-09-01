@@ -47,10 +47,10 @@ class RegisterRequest(BaseModel):
 
 
 class TokenExchangeRequest(BaseModel):
-    code: str
-    client_id: str
-    client_secret: str
-    redirect_uri: str
+    code: str = Field(min_length=32, max_length=512)
+    client_id: str = Field(min_length=2, max_length=255)
+    client_secret: str = Field(min_length=1, max_length=512)
+    redirect_uri: str = Field(min_length=8, max_length=2048)
 
     model_config = {
         "json_schema_extra": {
@@ -81,9 +81,9 @@ class TokenResponse(BaseModel):
 
 
 class IntrospectRequest(BaseModel):
-    token: str
-    client_id: str
-    client_secret: str
+    token: str = Field(min_length=32, max_length=8192)
+    client_id: str = Field(min_length=2, max_length=255)
+    client_secret: str = Field(min_length=1, max_length=512)
 
     model_config = {
         "json_schema_extra": {

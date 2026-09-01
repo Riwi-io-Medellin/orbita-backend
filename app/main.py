@@ -1,10 +1,8 @@
 from contextlib import asynccontextmanager
-from pathlib import Path
-
-import anyio
-from alembic import command
-from alembic.config import Config
-from fastapi import FastAPI, Request
+from urllib.parse import urlparse
+from fastapi import FastAPI, HTTPException, Request, status
+from sqlalchemy import text
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from app.config.settings import settings
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,18 +15,10 @@ from app.modules.access.router import router as applications_router
 from app.modules.access.service import AccessService
 from app.modules.auth.jwt import get_jwks
 from app.database.session import AsyncSessionLocal
-
-BASE_DIR = Path(__file__).resolve().parent.parent
-
-
-def run_migrations() -> None:
-    cfg = Config(BASE_DIR / "alembic.ini")
-    command.upgrade(cfg, "head")
-
+from app.security import csrf_and_origin_protection
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await anyio.to_thread.run_sync(run_migrations)
     async with AsyncSessionLocal() as db:
         await AccessService.seed(db)
         await AccessService.bootstrap_platform_admins(
@@ -92,27 +82,33 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-allowed_origins = [settings.frontend_url]
+allowed_origins = sorted(settings.allowed_frontend_origins())
+
+public_host = urlparse(settings.resolved_public_base_url).hostname or "localhost"
+trusted_hosts = [public_host, "healthcheck.railway.app"]
 if settings.environment == "development":
-    allowed_origins.extend([
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ])
+    trusted_hosts.extend(["localhost", "127.0.0.1", "testserver"])
+
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "X-CSRF-Token"],
 )
 
 app.add_middleware(
     SessionMiddleware,
-    secret_key=settings.jwt_secret,
-    same_site="none" if settings.environment == "production" else "lax",
+    secret_key=settings.session_signing_secret,
+    session_cookie=settings.pending_session_cookie_name,
+    same_site="lax",
     https_only=settings.environment == "production",
+    max_age=10 * 60,
 )
+
+app.middleware("http")(csrf_and_origin_protection)
 
 @app.get("/api/health", tags=["System"], summary="Health check")
 def health_check():
@@ -121,6 +117,17 @@ def health_check():
         "status": "ok",
         "service": "orbita-backend",
     }
+
+
+@app.get("/api/ready", tags=["System"], summary="Readiness check")
+async def readiness_check():
+    """Returns 200 only after the API can reach its primary database."""
+    try:
+        async with AsyncSessionLocal() as db:
+            await db.execute(text("SELECT 1"))
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Service unavailable") from exc
+    return {"status": "ok", "service": "orbita-backend"}
 
 
 @app.get("/api/.well-known/jwks.json", tags=["System"], summary="JSON Web Key Set")
@@ -132,7 +139,7 @@ def jwks():
 @app.get("/api/.well-known/orbita-configuration", tags=["System"], summary="Orbita SSO Client Contract discovery")
 def orbita_configuration(request: Request):
     """Public discovery document for `Orbita SSO Client Contract v1` consumers."""
-    issuer = str(request.base_url).rstrip("/")
+    issuer = settings.resolved_public_base_url.rstrip("/")
     return {
         "contract_version": "1.0",
         "issuer": issuer,

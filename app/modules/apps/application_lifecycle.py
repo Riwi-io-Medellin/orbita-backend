@@ -2,12 +2,14 @@
 
 import hashlib
 import secrets
+from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.access.models import Application, ApplicationAccessPolicy
 from app.modules.apps.models import App
+from app.modules.auth.models import AppSession
 
 _PBKDF2_ITERATIONS = 260_000
 
@@ -109,6 +111,13 @@ class ApplicationLifecycleService:
             application.is_active = is_active
         if app is not None:
             app.is_active = is_active
+
+        if not is_active and app is not None:
+            await db.execute(
+                update(AppSession)
+                .where(AppSession.app_id == app.id, AppSession.revoked_at.is_(None))
+                .values(revoked_at=datetime.now(UTC))
+            )
 
         await db.commit()
         if application is not None:

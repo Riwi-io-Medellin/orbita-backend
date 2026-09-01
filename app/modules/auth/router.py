@@ -53,6 +53,7 @@ from app.modules.auth.service import (
 )
 from app.modules.auth.moodle import MoodleClient, MoodleCredentialsError, MoodleUnavailableError
 from app.modules.auth.rate_limit import MoodleLoginRateLimiter, MoodleRateLimitedError
+from app.modules.auth.csrf import issue_csrf_token
 from app.modules.identity.service import (
     IdentityLinkConflictError,
     IdentityResolver,
@@ -71,13 +72,13 @@ router = APIRouter(
 
 _IS_PRODUCTION = settings.environment == "production"
 _COOKIE_SECURE = _IS_PRODUCTION
-_COOKIE_SAMESITE = "none" if _IS_PRODUCTION else "lax"
+_COOKIE_SAMESITE = settings.access_cookie_samesite
 logger = logging.getLogger(__name__)
 
 
 def _set_access_token_cookie(response, access_token: str) -> None:
     response.set_cookie(
-        key="access_token",
+        key=settings.access_cookie_name,
         value=access_token,
         httponly=True,
         secure=_COOKIE_SECURE,
@@ -92,7 +93,7 @@ async def _get_optional_current_user(
     db: AsyncSession,
 ) -> User | None:
 
-    token = request.cookies.get("access_token")
+    token = request.cookies.get(settings.access_cookie_name)
 
     if not token:
         return None
@@ -103,7 +104,10 @@ async def _get_optional_current_user(
     if not sub:
         return None
 
-    user = await UserService.get_user_by_id(db, UUID(sub))
+    try:
+        user = await UserService.get_user_by_id(db, UUID(sub))
+    except (TypeError, ValueError):
+        return None
 
     if user is None or not user.is_active or user.deleted_at is not None:
         return None
@@ -168,6 +172,23 @@ async def authentication_providers(db: AsyncSession = Depends(get_db)):
         microsoft=bool(microsoft and microsoft.active and settings.enable_microsoft_login),
         local=settings.enable_local_login,
     )
+
+
+@router.get(
+    "/csrf",
+    summary="Issue a CSRF token for the current browser session",
+    responses={401: {"model": ErrorDetail, "description": "No valid central session."}},
+)
+async def csrf_token(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """Returns a short-lived CSRF token bound to the current central-session JWT id."""
+    payload = decode_access_token(request.cookies.get(settings.access_cookie_name, ""))
+    session_jti = payload.get("jti")
+    if not session_jti:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
+    return {"csrf_token": issue_csrf_token(session_jti), "expires_in": 30 * 60}
 
 
 @router.post(
@@ -263,6 +284,15 @@ async def request_moodle_password_reset(
     db: AsyncSession = Depends(get_db),
 ):
     """Proxies Moodle's no-login reset service without storing credentials or tokens."""
+    throttle_subject = f"moodle-reset:{payload.identifier_type}:{payload.identifier.strip().lower()}"
+    try:
+        await MoodleLoginRateLimiter.ensure_allowed(db, settings, throttle_subject, request)
+    except MoodleRateLimitedError:
+        await AccessService.audit(db, event="moodle.password_reset_rate_limited", request=request)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Demasiadas solicitudes. Intenta nuevamente más tarde.",
+        )
     moodle_provider = await IdentityResolver.get_provider(db, "moodle")
     if moodle_provider is None or not moodle_provider.active or not MoodleClient(settings).configured:
         raise HTTPException(
@@ -280,6 +310,7 @@ async def request_moodle_password_reset(
             detail="El servicio de autenticación no está disponible temporalmente. Intenta nuevamente.",
         )
 
+    await MoodleLoginRateLimiter.record_attempt(db, settings, throttle_subject, request)
     await AccessService.audit(db, event="moodle.password_reset_requested", request=request)
     return {"message": "Si los datos coinciden con una cuenta Moodle, recibirás instrucciones para restablecer tu contraseña."}
 
@@ -306,7 +337,7 @@ async def start_sso_authorization(
     registry, checks the user has a role for that app, and redirects back with a 60-second one-time code.
     """
     app = await AppService.get_by_client_id(db, client_id)
-    if app is None or not app.is_active:
+    if app is None or not await AppService.is_available_for_sso(db, app):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Unknown or inactive app",
@@ -392,47 +423,39 @@ async def exchange_code_for_app_token(
     """
     app = await AppService.get_by_client_id(db, payload.client_id)
 
-    if app is None or not AppService.verify_client_secret(app, payload.client_secret):
+    if app is None or not await AppService.is_available_for_sso(db, app) or not AppService.verify_client_secret(app, payload.client_secret):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid client credentials",
         )
 
-    code_row = await AuthorizationCodeService.redeem_authorization_code(
-        db, payload.code, app, payload.redirect_uri,
-    )
-
-    if code_row is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid, expired, or already used code",
+    try:
+        code_row = await AuthorizationCodeService.redeem_authorization_code(
+            db, payload.code, app, payload.redirect_uri,
         )
+        if code_row is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid, expired, or already used code",
+            )
 
-    user = await UserService.get_user_by_id(db, code_row.user_id)
+        user = await UserService.get_user_by_id(db, code_row.user_id)
+        if user is None or _user_is_unavailable(user):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User no longer available")
 
-    if user is None or _user_is_unavailable(user):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User no longer available",
+        roles = await RoleService.list_roles_for_user_in_app(db, user.id, app)
+        if not roles:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not provisioned for this app")
+
+        access_token, jti, expires_at = create_app_token(
+            user_id=str(user.id), email=user.email, name=user.full_name,
+            client_id=app.client_id, roles=roles,
         )
-
-    roles = await RoleService.list_roles_for_user_in_app(db, user.id, app)
-
-    if not roles:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User is not provisioned for this app",
-        )
-
-    access_token, jti, expires_at = create_app_token(
-        user_id=str(user.id),
-        email=user.email,
-        name=user.full_name,
-        client_id=app.client_id,
-        roles=roles,
-    )
-
-    await AppSessionService.record_app_session(db, jti, user, app, expires_at)
+        await AppSessionService.record_app_session(db, jti, user, app, expires_at)
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
 
     return TokenResponse(
         access_token=access_token,
@@ -458,7 +481,7 @@ async def introspect_app_token(
     """
     app = await AppService.get_by_client_id(db, payload.client_id)
 
-    if app is None or not AppService.verify_client_secret(app, payload.client_secret):
+    if app is None or not await AppService.is_available_for_sso(db, app) or not AppService.verify_client_secret(app, payload.client_secret):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid client credentials",
@@ -472,7 +495,16 @@ async def introspect_app_token(
 
     session = await AppSessionService.is_session_active(db, jti)
 
-    if session is None:
+    if session is None or session.app_id != app.id:
+        return IntrospectResponse(active=False)
+
+    user = await UserService.get_user_by_id(db, session.user_id)
+    if user is None or _user_is_unavailable(user):
+        return IntrospectResponse(active=False)
+
+    current_roles = await RoleService.list_roles_for_user_in_app(db, user.id, app)
+    token_roles = claims.get("roles")
+    if not current_roles or not isinstance(token_roles, list) or set(current_roles) != set(token_roles):
         return IntrospectResponse(active=False)
 
     return IntrospectResponse(
@@ -509,7 +541,7 @@ async def logout_and_revoke_sessions(
     )
 
     response.delete_cookie(
-        key="access_token",
+        key=settings.access_cookie_name,
         httponly=True,
         secure=_COOKIE_SECURE,
         samesite=_COOKIE_SAMESITE,
@@ -650,9 +682,19 @@ async def password_login(
     if not settings.enable_local_login:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Local login is disabled")
 
+    throttle_subject = f"local:{str(payload.email).strip().lower()}"
+    try:
+        await MoodleLoginRateLimiter.ensure_allowed(db, settings, throttle_subject, request)
+    except MoodleRateLimitedError:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Demasiados intentos. Intenta nuevamente más tarde.",
+        )
+
     user = await UserService.get_by_email(db, str(payload.email))
 
     if user is None or not verify_password(payload.password, user.password_hash):
+        await MoodleLoginRateLimiter.record_failure(db, settings, throttle_subject, request)
         await AccessService.audit(
             db,
             event="login.password_failed",
@@ -676,6 +718,7 @@ async def password_login(
             detail="Tu cuenta se encuentra deshabilitada. Contacta a un administrador.",
         )
 
+    await MoodleLoginRateLimiter.clear_success(db, settings, throttle_subject, request)
     response = JSONResponse(content={"message": "Authenticated"})
     return await _issue_central_session(db, user, request, response, event="login.local")
 

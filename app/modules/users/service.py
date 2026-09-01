@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 
 from app.modules.users.models import User
+from app.modules.auth.models import AppSession
 
 
 class UserService:
@@ -86,6 +87,13 @@ class UserService:
 
         user.is_active = is_active
 
+        if not is_active:
+            await db.execute(
+                update(AppSession)
+                .where(AppSession.user_id == user.id, AppSession.revoked_at.is_(None))
+                .values(revoked_at=datetime.now(timezone.utc))
+            )
+
         await db.commit()
         await db.refresh(user)
 
@@ -100,6 +108,11 @@ class UserService:
 
         user.deleted_at = datetime.now(timezone.utc)
         user.is_active = False
+        await db.execute(
+            update(AppSession)
+            .where(AppSession.user_id == user.id, AppSession.revoked_at.is_(None))
+            .values(revoked_at=datetime.now(timezone.utc))
+        )
 
         await db.commit()
         await db.refresh(user)
@@ -122,6 +135,12 @@ class UserService:
             await db.execute(
                 update(User).where(User.id.in_(existing_ids)).values(is_active=is_active)
             )
+            if not is_active:
+                await db.execute(
+                    update(AppSession)
+                    .where(AppSession.user_id.in_(existing_ids), AppSession.revoked_at.is_(None))
+                    .values(revoked_at=datetime.now(timezone.utc))
+                )
             await db.commit()
 
         result = await db.execute(select(User).where(User.id.in_(existing_ids)))
@@ -144,6 +163,11 @@ class UserService:
                 update(User)
                 .where(User.id.in_(existing_ids))
                 .values(is_active=False, deleted_at=datetime.now(timezone.utc))
+            )
+            await db.execute(
+                update(AppSession)
+                .where(AppSession.user_id.in_(existing_ids), AppSession.revoked_at.is_(None))
+                .values(revoked_at=datetime.now(timezone.utc))
             )
             await db.commit()
 

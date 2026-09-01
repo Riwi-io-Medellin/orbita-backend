@@ -75,8 +75,6 @@ class AuthorizationCodeService:
         result = await db.execute(stmt)
         row = result.scalar_one_or_none()
 
-        await db.commit()
-
         return row
 
 
@@ -99,8 +97,6 @@ class AppSessionService:
         )
 
         db.add(session)
-        await db.commit()
-
         return session
 
     @staticmethod
@@ -133,6 +129,28 @@ class AppSessionService:
         await db.execute(stmt)
         await db.commit()
 
+    @staticmethod
+    async def revoke_for_app(db: AsyncSession, app_id: UUID) -> None:
+        await db.execute(
+            update(AppSession)
+            .where(AppSession.app_id == app_id, AppSession.revoked_at.is_(None))
+            .values(revoked_at=datetime.now(UTC))
+        )
+        await db.commit()
+
+    @staticmethod
+    async def revoke_for_user_in_app(db: AsyncSession, user_id: UUID, app_id: UUID) -> None:
+        await db.execute(
+            update(AppSession)
+            .where(
+                AppSession.user_id == user_id,
+                AppSession.app_id == app_id,
+                AppSession.revoked_at.is_(None),
+            )
+            .values(revoked_at=datetime.now(UTC))
+        )
+        await db.commit()
+
 
 async def build_authorize_redirect(
     db: AsyncSession,
@@ -144,7 +162,7 @@ async def build_authorize_redirect(
 
     app = await AppService.get_by_client_id(db, client_id)
 
-    if app is None or not app.is_active:
+    if app is None or not await AppService.is_available_for_sso(db, app):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Unknown or inactive app",

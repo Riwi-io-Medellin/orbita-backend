@@ -10,6 +10,7 @@ from app.modules.apps.schemas import (
     AppCreate,
     AppCreated,
     AppRead,
+    AppSecretRotated,
     AppStatusUpdate,
     RedirectURICreate,
     RedirectURIRead,
@@ -123,6 +124,32 @@ async def update_app_status(
         db, app=app, is_active=payload.is_active,
     )
     return updated_app
+
+
+@router.post(
+    "/{client_id}/rotate-secret",
+    response_model=AppSecretRotated,
+    summary="Rotate an SSO client secret",
+    responses={404: {"model": ErrorDetail, "description": "App not found."}},
+)
+async def rotate_app_secret(
+    client_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Returns the replacement secret once. The immediately previous secret remains valid for 15 minutes."""
+    app = await AppService.get_by_client_id(db, client_id)
+    if app is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="App not found")
+    raw_secret, expires_at = await AppService.rotate_client_secret(db, app)
+    return AppSecretRotated(
+        id=app.id,
+        application_id=app.application_id,
+        client_id=app.client_id,
+        name=app.name,
+        is_active=app.is_active,
+        client_secret=raw_secret,
+        previous_secret_expires_at=expires_at,
+    )
 
 
 @router.post(

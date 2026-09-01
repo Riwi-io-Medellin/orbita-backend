@@ -1,8 +1,10 @@
 import hashlib
 import hmac
+import secrets
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,7 +12,8 @@ from app.modules.apps.models import App, AppRedirectURI, Role, UserAppRole
 from app.modules.apps.schemas import RoleCatalogEntry
 from app.modules.access.models import Application
 from app.modules.users.models import User
-from app.modules.apps.application_lifecycle import _PBKDF2_ITERATIONS
+from app.modules.apps.application_lifecycle import _PBKDF2_ITERATIONS, hash_client_secret
+from app.modules.auth.models import AppSession
 
 def _verify_secret(raw_secret: str, stored_hash: str) -> bool:
     salt, _, digest = stored_hash.partition("$")
@@ -65,7 +68,32 @@ class AppService:
 
     @staticmethod
     def verify_client_secret(app: App, raw_secret: str) -> bool:
-        return _verify_secret(raw_secret, app.client_secret_hash)
+        if _verify_secret(raw_secret, app.client_secret_hash):
+            return True
+        return bool(
+            app.previous_client_secret_hash
+            and app.previous_secret_expires_at
+            and app.previous_secret_expires_at > datetime.now(UTC)
+            and _verify_secret(raw_secret, app.previous_client_secret_hash)
+        )
+
+    @staticmethod
+    async def rotate_client_secret(db: AsyncSession, app: App, *, grace_minutes: int = 15) -> tuple[str, datetime]:
+        raw_secret = secrets.token_urlsafe(32)
+        expires_at = datetime.now(UTC) + timedelta(minutes=grace_minutes)
+        app.previous_client_secret_hash = app.client_secret_hash
+        app.previous_secret_expires_at = expires_at
+        app.client_secret_hash = hash_client_secret(raw_secret)
+        await db.commit()
+        await db.refresh(app)
+        return raw_secret, expires_at
+
+    @staticmethod
+    async def is_available_for_sso(db: AsyncSession, app: App) -> bool:
+        if not app.is_active or app.application_id is None:
+            return False
+        application = await db.get(Application, app.application_id)
+        return bool(application and application.is_active)
 
     @staticmethod
     async def add_redirect_uri(
@@ -250,13 +278,31 @@ class RoleService:
                 role.is_active = False
                 deactivated.append(role.name)
 
+        if deactivated:
+            await db.execute(
+                update(AppSession)
+                .where(AppSession.app_id == app.id, AppSession.revoked_at.is_(None))
+                .values(revoked_at=datetime.now(UTC))
+            )
+
         await db.commit()
         roles = await RoleService.list_for_app(db, app, include_inactive=True)
         return roles, deactivated
 
     @staticmethod
     async def delete_role(db: AsyncSession, role: Role) -> None:
+        user_ids = list(await db.scalars(select(UserAppRole.user_id).where(UserAppRole.role_id == role.id)))
         await db.execute(delete(UserAppRole).where(UserAppRole.role_id == role.id))
+        if user_ids:
+            await db.execute(
+                update(AppSession)
+                .where(
+                    AppSession.app_id == role.app_id,
+                    AppSession.user_id.in_(user_ids),
+                    AppSession.revoked_at.is_(None),
+                )
+                .values(revoked_at=datetime.now(UTC))
+            )
         await db.delete(role)
         await db.commit()
 
@@ -274,6 +320,15 @@ class RoleService:
                 UserAppRole.app_id == app.id,
                 UserAppRole.role_id == role.id,
             )
+        )
+        await db.execute(
+            update(AppSession)
+            .where(
+                AppSession.user_id == user_id,
+                AppSession.app_id == app.id,
+                AppSession.revoked_at.is_(None),
+            )
+            .values(revoked_at=datetime.now(UTC))
         )
         await db.commit()
 
@@ -319,6 +374,15 @@ class RoleService:
                     UserAppRole.app_id == app.id,
                     UserAppRole.role_id == role.id,
                 )
+            )
+            await db.execute(
+                update(AppSession)
+                .where(
+                    AppSession.user_id.in_(existing_ids),
+                    AppSession.app_id == app.id,
+                    AppSession.revoked_at.is_(None),
+                )
+                .values(revoked_at=datetime.now(UTC))
             )
             await db.commit()
 

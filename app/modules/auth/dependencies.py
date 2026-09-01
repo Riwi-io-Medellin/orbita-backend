@@ -5,6 +5,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.session import get_db
+from app.config.settings import settings
 from app.modules.auth.jwt import decode_access_token
 from app.modules.users.models import User
 from app.modules.users.service import UserService
@@ -17,7 +18,7 @@ async def get_current_user(
     db: AsyncSession = Depends(get_db),
 ):
 
-    token = request.cookies.get("access_token")
+    token = request.cookies.get(settings.access_cookie_name)
 
     if token is None:
         raise HTTPException(

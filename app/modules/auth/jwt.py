@@ -24,6 +24,8 @@ def create_access_token(
         "sub": user_id,
         "email": email,
         "roles": roles,
+        "jti": str(uuid.uuid4()),
+        "iat": datetime.now(UTC),
         "exp": expire,
     }
 
