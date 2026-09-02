@@ -73,6 +73,14 @@ router = APIRouter(
 _IS_PRODUCTION = settings.environment == "production"
 _COOKIE_SECURE = _IS_PRODUCTION
 _COOKIE_SAMESITE = settings.access_cookie_samesite
+
+
+def _sso_access_denied_redirect() -> RedirectResponse:
+    """Return the central UI error for an authenticated user without app access."""
+    return RedirectResponse(
+        url=f"{settings.frontend_url}/auth?error=sso_access_denied",
+        status_code=302,
+    )
 logger = logging.getLogger(__name__)
 
 
@@ -318,9 +326,8 @@ async def request_moodle_password_reset(
     "/authorize",
     summary="Start an SSO handoff for another app",
     responses={
-        302: {"description": "Redirect either to Orbita login (no session yet) or to the app's redirect_uri with a one-time code."},
+        302: {"description": "Redirect either to Orbita login, the central access-denied screen, or to the app's redirect_uri with a one-time code."},
         400: {"model": ErrorDetail, "description": "Unknown/inactive app, or redirect_uri not registered for it."},
-        403: {"model": ErrorDetail, "description": "User has no role assigned for this app."},
     },
 )
 async def start_sso_authorization(
@@ -361,7 +368,15 @@ async def start_sso_authorization(
             status_code=302,
         )
 
-    return await build_authorize_redirect(db, user, client_id, redirect_uri, state)
+    try:
+        return await build_authorize_redirect(db, user, client_id, redirect_uri, state)
+    except HTTPException as exc:
+        # This browser-facing endpoint must return a useful UI for an already
+        # authenticated user who is not provisioned for the requested app.
+        # Keep malformed/inactive-client errors as API errors.
+        if exc.status_code == status.HTTP_403_FORBIDDEN:
+            return _sso_access_denied_redirect()
+        raise
 
 
 @router.get(
@@ -397,10 +412,7 @@ async def resume_sso_authorization(
             pending["state"],
         )
     except (HTTPException, KeyError):
-        return RedirectResponse(
-            url=f"{settings.frontend_url}/auth?error=sso_access_denied",
-            status_code=302,
-        )
+        return _sso_access_denied_redirect()
 
 @router.post(
     "/token",

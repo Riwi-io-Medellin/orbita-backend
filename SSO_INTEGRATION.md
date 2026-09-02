@@ -12,7 +12,9 @@ Ask an Orbita platform admin to register your app (this cannot be self-served ye
 - One or more allow-listed `redirect_uri`s (one per environment: dev/staging/prod)
 - The roles your app needs, and which users get which role
 
-None of this is usable until at least one role is assigned to a user for your app — an authenticated user with zero roles for your app is refused at login (`403`).
+None of this is usable until at least one role is assigned to a user for your app — an authenticated
+user with zero roles for your app is refused by the authorization flow. In a browser, Órbita redirects
+to its frontend with `error=sso_access_denied`; non-browser/API callers may receive `403`.
 
 Create independent registrations for development, staging and production. The launcher URL must be
 your backend's “start Órbita login” endpoint, which generates `state`; it must not contain a secret and
