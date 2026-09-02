@@ -40,6 +40,9 @@ Las migraciones de Alembic corren automáticamente al iniciar (no hace falta `al
 El contrato ejecutable está en `/docs` (Swagger), `/redoc` y `/openapi.json`. La guía completa de
 autenticación, respuestas y política de acceso está en [API_CONTRACT.md](API_CONTRACT.md).
 Las aplicaciones que consumen SSO deben seguir [SSO_CLIENT_CONTRACT.md](SSO_CLIENT_CONTRACT.md) y el proceso operativo de [SSO_INTEGRATION.md](SSO_INTEGRATION.md).
+La limitación de sesión causada por usar frontend y backend en hosts `*.up.railway.app`, incluido su
+impacto sobre Moodle, Microsoft y aplicaciones SSO, está documentada en
+[DEPLOYMENT_DOMAINS.md](DEPLOYMENT_DOMAINS.md).
 El trabajo de seguridad y operación pendiente está priorizado en [SECURITY_HARDENING_PLAN.md](SECURITY_HARDENING_PLAN.md).
 
 ## Endpoints principales

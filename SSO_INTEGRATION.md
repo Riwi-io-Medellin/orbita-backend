@@ -147,6 +147,11 @@ disabling an app/user or changing roles makes its result inactive immediately.
 
 ## Orbita production variables
 
+Before go-live, read [DEPLOYMENT_DOMAINS.md](DEPLOYMENT_DOMAINS.md). Railway's default
+`*.up.railway.app` frontend and backend hostnames are different browser sites, so the central session
+depends on third-party-cookie support. Production should use controlled frontend/backend hostnames
+under the same registrable domain, or a same-origin API proxy.
+
 In addition to the existing database and Microsoft OAuth variables, Railway must define:
 
 ```env
