@@ -50,7 +50,7 @@ client changes both records atomically.
 | GET | `/auth/csrf` | Session | Returns a short-lived, session-bound token for `X-CSRF-Token` on cookie-authenticated mutations. |
 | GET | `/auth/me` | Session | Current profile and global roles. App-scoped roles are intentionally excluded. |
 | POST | `/auth/logout` | Public/session | Clears the central cookie and revokes the caller's recorded app sessions. Always succeeds. |
-| GET | `/auth/authorize` | Public/session | Starts an authorization-code SSO handoff. Query: `client_id`, exact registered `redirect_uri`, `state` (16–512 chars). Redirects with `code` and `state`; `403` if the user has no app role. |
+| GET | `/auth/authorize` | Public/session | Starts an authorization-code SSO handoff. Query: `client_id`, exact registered `redirect_uri`, `state` (16–512 chars). Redirects with `code` and `state`; if an already authenticated user has no app role, redirects to the frontend with `error=sso_access_denied`. |
 | GET | `/auth/resume` | Public/session | Continues the handoff saved by `/auth/authorize` after central login. |
 | POST | `/auth/token` | Client credentials | Exchanges a single-use, ~60-second code for a 30-minute RS256 JWT. Body: `code`, `client_id`, `client_secret`, `redirect_uri`. |
 | POST | `/auth/introspect` | Client credentials | Body: `token`, `client_id`, `client_secret`. Returns `200 {active:false}` for revoked, expired, wrong-audience, unavailable app/user, or changed roles. |

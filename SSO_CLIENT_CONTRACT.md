@@ -130,7 +130,9 @@ JWT expiration (currently 30 minutes).
 
 - `400` from `/token`: code invalid, expired, reused or bound to another redirect URI; restart login.
 - `401`: invalid client credentials; alert operators without exposing the secret.
-- `403`: the user no longer has an active role for the app; deny access.
+- An authenticated user without an active role for the app is redirected by the browser-facing
+  authorization endpoint to Órbita's frontend with `error=sso_access_denied`; show an access-denied
+  message and do not retry automatically. A direct API/client call may still receive `403`.
 - `429`/`5xx`/network failure: show a recoverable error and use bounded retries only for requests known
   to be safe; never loop browser redirects.
 
