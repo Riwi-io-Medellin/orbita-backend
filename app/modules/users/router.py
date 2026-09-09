@@ -267,7 +267,12 @@ async def assign_global_role(
     if role is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Global role not found")
 
-    await AccessService.assign_global_role(db, user_id, role_id)
+    try:
+        await AccessService.assign_global_role(db, user_id, role_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.get(

@@ -51,7 +51,7 @@ from app.modules.auth.service import (
     AuthorizationCodeService,
     build_authorize_redirect,
 )
-from app.modules.auth.moodle import MoodleClient, MoodleCredentialsError, MoodleUnavailableError
+from app.modules.auth.moodle import MoodleClient, MoodleCredentialsError, MoodleUnavailableError, mapped_orbita_role
 from app.modules.auth.rate_limit import MoodleLoginRateLimiter, MoodleRateLimitedError
 from app.modules.auth.csrf import issue_csrf_token
 from app.modules.identity.service import (
@@ -274,6 +274,16 @@ async def moodle_login(
         )
 
     await MoodleLoginRateLimiter.clear_success(db, settings, payload.username, request)
+    resolved_role = await AccessService.sync_moodle_role(
+        db, resolution.user.id, mapped_orbita_role(moodle_user.role_shortnames),
+    )
+    await AccessService.audit(
+        db,
+        event="access.moodle_role_synchronized",
+        user_id=resolution.user.id,
+        request=request,
+        details={"role": resolved_role},
+    )
     for event, details in resolution.events:
         await AccessService.audit(db, event=event, user_id=resolution.user.id, request=request, details=details)
     response = JSONResponse(content={"message": "Authenticated"})

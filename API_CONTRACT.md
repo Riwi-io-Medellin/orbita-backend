@@ -11,6 +11,7 @@ when looking at individual routes.
   `access_token` in development). Browser requests must use
   credentials so the cookie is sent.
 - **Platform admin** endpoints additionally require the global `admin` role on that user.
+- Global roles are `admin`, `teamleader`, `coder` and `guest`. `guest` grants no catalog access.
 - **Client credentials** endpoints are called server-to-server with `client_id` and `client_secret`
   in the JSON body; never expose a client secret to a browser.
 - `204` responses have no body. HTTP errors use `{ "detail": "..." }`. Bulk responses report unknown
@@ -44,7 +45,7 @@ client changes both records atomically.
 | GET | `/auth/login` | Public | Starts Microsoft OAuth; `302` to Microsoft. |
 | GET | `/auth/callback` | Public | Microsoft callback; establishes the central cookie and redirects to the frontend or pending SSO client. |
 | GET | `/auth/providers` | Public | Returns which of Moodle, Microsoft and local login are currently available. Provider availability is enforced by the backend. |
-| POST | `/auth/moodle/login` | Public | Body: `{username,password}`. Validates credentials through Moodle without persisting its password or token, resolves the canonical Orbita user, and sets the central cookie. Returns `429` for throttling and `503` when Moodle is disabled/unavailable. |
+| POST | `/auth/moodle/login` | Public | Body: `{username,password}`. Validates credentials through Moodle without persisting its password or token, resolves the canonical Orbita user, reads active course roles, and sets the central cookie. `manager`/`gestor`, `editingteacher`/`teacher` and `student` map to `admin`, `teamleader` and `coder`; no recognized role resolves to `guest` unless an admin set a manual exception. Returns `429` for throttling and `503` when Moodle is disabled/unavailable. |
 | POST | `/auth/moodle/password-reset` | Public | Body: `{identifier,identifier_type}` where `identifier_type` is `username` or `email`. Requests Moodle's password-reset flow through Orbita without a Moodle token and always returns a generic confirmation when accepted. |
 | POST | `/auth/login` | Public | Local email/password login. Sets the central cookie. `401` invalid credentials; `403` inactive user. |
 | GET | `/auth/csrf` | Session | Returns a short-lived, session-bound token for `X-CSRF-Token` on cookie-authenticated mutations. |

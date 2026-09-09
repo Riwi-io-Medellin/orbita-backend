@@ -66,5 +66,5 @@ async def test_bootstrap_assigns_admin_role_without_changing_account_status():
     await AccessService.bootstrap_platform_admins(db, [" ADMIN@example.com "])
 
     assert user.is_active is False
-    assert len(db.executed) == 1
+    assert len(db.executed) == 2
     assert db.commits == 1

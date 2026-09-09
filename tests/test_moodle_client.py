@@ -5,7 +5,7 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from app.modules.auth.moodle import MoodleClient, MoodleCredentialsError
+from app.modules.auth.moodle import MoodleClient, MoodleCredentialsError, mapped_orbita_role
 
 
 def moodle_settings():
@@ -32,10 +32,18 @@ async def test_moodle_client_only_queries_the_authenticated_users_profile():
             return httpx.Response(200, json={"token": "transient-token"})
         if fields["wsfunction"] == ["core_webservice_get_site_info"]:
             return httpx.Response(200, json={"userid": 1909})
-        assert fields["wsfunction"] == ["core_user_get_users_by_field"]
-        assert fields["field"] == ["id"]
-        assert fields["values[0]"] == ["1909"]
-        return httpx.Response(200, json=[{"id": 1909, "email": "Ana@Riwi.io", "fullname": "Ana Riwi"}])
+        if fields["wsfunction"] == ["core_user_get_users_by_field"]:
+            assert fields["field"] == ["id"]
+            assert fields["values[0]"] == ["1909"]
+            return httpx.Response(200, json=[{"id": 1909, "email": "Ana@Riwi.io", "fullname": "Ana Riwi"}])
+        if fields["wsfunction"] == ["core_enrol_get_users_courses"]:
+            assert fields["userid"] == ["1909"]
+            assert fields["returnusercount"] == ["0"]
+            return httpx.Response(200, json=[{"id": 101}, {"id": 202}])
+        assert fields["wsfunction"] == ["core_user_get_course_user_profiles"]
+        assert fields["userlist[0][userid]"] == ["1909"]
+        course_id = fields["userlist[0][courseid]"][0]
+        return httpx.Response(200, json=[{"id": 1909, "roles": [{"shortname": "student" if course_id == "101" else "teacher"}]}])
 
     client = MoodleClient(moodle_settings(), transport=httpx.MockTransport(handler))
     user = await client.authenticate("ana", "secret")
@@ -43,7 +51,14 @@ async def test_moodle_client_only_queries_the_authenticated_users_profile():
     assert user.user_id == "1909"
     assert user.email == "ana@riwi.io"
     assert user.full_name == "Ana Riwi"
-    assert len(calls) == 3
+    assert user.role_shortnames == ("student", "teacher")
+    assert len(calls) == 6
+
+
+def test_maps_moodle_roles_by_privilege():
+    assert mapped_orbita_role(("student", "teacher")) == "teamleader"
+    assert mapped_orbita_role(("student", "gestor")) == "admin"
+    assert mapped_orbita_role(("unknown",)) is None
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,15 @@ user_global_roles = Table(
     Column("global_role_id", UUID(as_uuid=True), ForeignKey("global_roles.id", ondelete="CASCADE"), primary_key=True),
 )
 
+# Tracks why a global role exists.  `user_global_roles` remains the resolved,
+# effective role used by the launcher and authorization queries.
+user_global_role_sources = Table(
+    "user_global_role_sources", Base.metadata,
+    Column("user_id", UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("global_role_id", UUID(as_uuid=True), ForeignKey("global_roles.id", ondelete="CASCADE"), primary_key=True),
+    Column("source", String(32), primary_key=True),
+)
+
 application_global_roles = Table(
     "application_global_roles", Base.metadata,
     Column("application_id", UUID(as_uuid=True), ForeignKey("applications.id", ondelete="CASCADE"), primary_key=True),

@@ -70,4 +70,4 @@ python -m alembic heads
 python -m pytest -q
 ```
 
-El arranque ejecuta `alembic upgrade head` y siembra roles globales/provisionamiento administrativo. En despliegues con múltiples réplicas, coordinar el arranque para evitar carreras de migración.
+El arranque siembra roles globales/provisionamiento administrativo. Aplicar `alembic upgrade head` antes de iniciar despliegues. Los roles globales son `admin`, `teamleader`, `coder` y `guest`; Moodle sincroniza los tres primeros desde los roles activos de sus cursos.
