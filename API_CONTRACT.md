@@ -10,7 +10,7 @@ when looking at individual routes.
 - **Session** endpoints require Orbita's HTTP-only access cookie (`__Host-orbita_access` in production;
   `access_token` in development). Browser requests must use
   credentials so the cookie is sent.
-- **Platform admin** endpoints additionally require `is_platform_admin=true` on that user.
+- **Platform admin** endpoints additionally require the global `admin` role on that user.
 - **Client credentials** endpoints are called server-to-server with `client_id` and `client_secret`
   in the JSON body; never expose a client secret to a browser.
 - `204` responses have no body. HTTP errors use `{ "detail": "..." }`. Bulk responses report unknown

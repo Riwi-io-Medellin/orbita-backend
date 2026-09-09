@@ -17,13 +17,14 @@ from app.modules.users.models import User
 from app.modules.apps.models import App, UserAppRole
 
 DEFAULT_ROLE = "coder"
+PLATFORM_ADMIN_ROLE = "admin"
 
 
 class AccessService:
     @staticmethod
     async def seed(db: AsyncSession) -> None:
         await db.execute(insert(GlobalRole).values([
-            {"name": "admin", "description": "Administración de Órbita"},
+            {"name": PLATFORM_ADMIN_ROLE, "description": "Administración de Órbita"},
             {"name": "staff", "description": "Personal interno de Riwi"},
             {"name": DEFAULT_ROLE, "description": "Coders de Riwi"},
         ]).on_conflict_do_nothing(index_elements=["name"]))
@@ -39,10 +40,9 @@ class AccessService:
         if not users:
             return
 
-        admin_role_id = await db.scalar(select(GlobalRole.id).where(GlobalRole.name == "admin"))
-        for user in users:
-            user.is_platform_admin = True
-            user.is_active = True
+        admin_role_id = await db.scalar(
+            select(GlobalRole.id).where(GlobalRole.name == PLATFORM_ADMIN_ROLE)
+        )
 
         if admin_role_id is not None:
             await db.execute(
@@ -69,6 +69,19 @@ class AccessService:
     async def role_names(db: AsyncSession, user_id) -> list[str]:
         result = await db.scalars(select(GlobalRole.name).join(user_global_roles).where(user_global_roles.c.user_id == user_id).order_by(GlobalRole.name))
         return list(result)
+
+    @staticmethod
+    async def has_global_role(db: AsyncSession, user_id, role_name: str) -> bool:
+        role_id = await db.scalar(
+            select(GlobalRole.id)
+            .join(user_global_roles)
+            .where(
+                user_global_roles.c.user_id == user_id,
+                GlobalRole.name == role_name,
+            )
+            .limit(1)
+        )
+        return role_id is not None
 
     @staticmethod
     async def authorized_applications(db: AsyncSession, user_id) -> list[Application]:

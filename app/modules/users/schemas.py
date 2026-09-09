@@ -11,7 +11,6 @@ class UserAdminRead(BaseModel):
     email: str
     full_name: str
     is_active: bool
-    is_platform_admin: bool
     deleted_at: datetime | None
     created_at: datetime
 
@@ -23,7 +22,6 @@ class UserAdminRead(BaseModel):
                 "email": "user@example.com",
                 "full_name": "Jane Doe",
                 "is_active": True,
-                "is_platform_admin": False,
                 "deleted_at": None,
                 "created_at": "2026-08-13T01:12:34.473413Z",
             }

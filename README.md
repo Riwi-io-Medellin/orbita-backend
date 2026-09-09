@@ -5,7 +5,7 @@ API central de identidad, acceso, catálogo y SSO de Órbita, desarrollada con F
 ## Requisitos
 
 - Python 3.11+
-- Docker (para Postgres local) o una instancia de Postgres 17 accesible
+- Docker (para Postgres local) o una instancia de Postgres 18 accesible
 
 ## Instalación
 

@@ -27,6 +27,8 @@ pnpm-debug.log*
 .env
 .env.*
 !.env.example
+private.pem
+public.pem
 
 # Databases & Logs
 logs/
@@ -34,6 +36,7 @@ logs/
 *.sqlite
 *.sqlite3
 *.db
+*.dump
 
 # IDE & Editor
 .vscode/
