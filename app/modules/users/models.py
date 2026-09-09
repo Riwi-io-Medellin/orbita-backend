@@ -40,12 +40,6 @@ class User(Base):
         nullable=False,
     )
 
-    is_platform_admin: Mapped[bool] = mapped_column(
-        Boolean,
-        default=False,
-        nullable=False,
-    )
-
     password_hash: Mapped[str | None] = mapped_column(String(255))
 
     deleted_at: Mapped[datetime | None] = mapped_column(

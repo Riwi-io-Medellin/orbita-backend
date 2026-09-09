@@ -62,8 +62,7 @@ Las dependencias deben apuntar hacia reglas de negocio, no hacia detalles HTTP. 
 
 Mantener separadas estas tres capas:
 
-- `is_platform_admin`: autoriza la administración de la plataforma. Es el límite real para usuarios, registro SSO, roles y auditoría.
-- Roles globales (`admin`, `staff`, `coder`): habilitan aplicaciones de catálogo; no expresan permisos internos de una app SSO.
+- El rol global `admin`: autoriza la administración de la plataforma y habilita las aplicaciones de catálogo que se le asignen. `staff` y `coder` solo habilitan aplicaciones de catálogo; ninguno expresa permisos internos de una app SSO.
 - Roles por aplicación: pertenecen a un cliente SSO, habilitan su tarjeta, autorizan el handoff y viajan en el claim `roles` del JWT con `aud=client_id`.
 
 Hay dos políticas de aplicación:
@@ -71,9 +70,9 @@ Hay dos políticas de aplicación:
 - `catalog`: es un lanzador. El acceso proviene de un rol global o de una asignación directa; Órbita no emite un token SSO.
 - `sso_role`: su visibilidad y autenticación dependen de al menos un rol asignado en esa app. Los grants directos y globales no deben saltarse esta regla.
 
-Un usuario nuevo comienza inactivo. `PLATFORM_ADMIN_EMAILS` activa y promueve cuentas administrativas durante el arranque. La eliminación de usuarios es lógica (`deleted_at` + `is_active=false`), no física.
+Un usuario nuevo comienza inactivo. `PLATFORM_ADMIN_EMAILS` otorga el rol global `admin` a cuentas existentes durante el arranque. La eliminación de usuarios es lógica (`deleted_at` + `is_active=false`), no física.
 
-El frontend puede ocultar opciones, pero nunca es un límite de seguridad. Toda ruta administrativa debe depender de `get_current_platform_admin`; toda ruta autenticada debe validar en backend la cookie y que el usuario siga activo.
+El frontend puede ocultar opciones, pero nunca es un límite de seguridad. Toda ruta administrativa debe depender de `get_current_platform_admin`, que valida el rol global `admin`; toda ruta autenticada debe validar en backend la cookie y que el usuario siga activo.
 
 ## Flujo de sesión de Órbita
 

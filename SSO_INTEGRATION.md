@@ -175,7 +175,7 @@ ENABLE_MICROSOFT_LOGIN=true
 ALLOWED_IDENTITY_EMAIL_DOMAINS=riwi.io
 ```
 
-Keep `JWT_KID` stable while the key pair is unchanged. The private key must only exist in the Orbita backend; client applications use the public JWKS endpoint. `PLATFORM_ADMIN_EMAILS` bootstraps the first administrators and may be narrowed after normal administration is established.
+Keep `JWT_KID` stable while the key pair is unchanged. The private key must only exist in the Orbita backend; client applications use the public JWKS endpoint. `PLATFORM_ADMIN_EMAILS` grants the global `admin` role to existing accounts at startup and may be narrowed after normal administration is established.
 
 Railway runs Alembic in the configured pre-deploy command; a migration failure prevents the new web
 deployment from receiving traffic. Deploy the backend before registering SSO clients, then deploy each

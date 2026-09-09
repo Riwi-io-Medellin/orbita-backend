@@ -802,7 +802,6 @@ async def get_current_user_profile(
         "email": current_user.email,
         "name": current_user.full_name,
         "active": current_user.is_active,
-        "is_platform_admin": current_user.is_platform_admin,
         "roles": roles,
         "role": roles[0] if roles else None,
     }
