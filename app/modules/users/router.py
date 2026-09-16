@@ -87,15 +87,19 @@ async def create_local_user(
             password_hash=hash_password(temporary_password),
             is_active=True,
             must_change_password=True,
+            commit=False,
         )
-        await AccessService.ensure_default_role(db, user)
+        await AccessService.ensure_default_role(db, user, commit=False)
         await AccessService.audit(
             db,
             event="user.local_created",
             user_id=user.id,
             request=request,
             details={"created_by_admin": True},
+            commit=False,
         )
+        await db.commit()
+        await db.refresh(user)
     except IntegrityError:
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")

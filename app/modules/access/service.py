@@ -81,7 +81,7 @@ class AccessService:
         await db.commit()
 
     @staticmethod
-    async def ensure_default_role(db: AsyncSession, user: User) -> None:
+    async def ensure_default_role(db: AsyncSession, user: User, *, commit: bool = True) -> None:
         has_source = await db.scalar(select(user_global_role_sources.c.user_id).where(user_global_role_sources.c.user_id == user.id).limit(1))
         if has_source:
             return
@@ -89,7 +89,8 @@ class AccessService:
         if role_id is not None:
             await db.execute(insert(user_global_role_sources).values(user_id=user.id, global_role_id=role_id, source=FALLBACK_ROLE_SOURCE).on_conflict_do_nothing())
             await AccessService.reconcile_effective_role(db, user.id, commit=False)
-            await db.commit()
+            if commit:
+                await db.commit()
 
     @staticmethod
     async def reconcile_effective_role(db: AsyncSession, user_id: UUID, *, commit: bool = True) -> str:
@@ -377,11 +378,21 @@ class AccessService:
         return list(existing_ids), not_found_ids
 
     @staticmethod
-    async def audit(db: AsyncSession, *, event: str, user_id=None, request=None, application_id=None, details: dict | None = None) -> None:
+    async def audit(
+        db: AsyncSession,
+        *,
+        event: str,
+        user_id=None,
+        request=None,
+        application_id=None,
+        details: dict | None = None,
+        commit: bool = True,
+    ) -> None:
         db.add(AuditLog(
             event=event, user_id=user_id, application_id=application_id,
             ip_address=request.client.host if request and request.client else None,
             user_agent=request.headers.get("user-agent") if request else None,
             details=details or {},
         ))
-        await db.commit()
+        if commit:
+            await db.commit()

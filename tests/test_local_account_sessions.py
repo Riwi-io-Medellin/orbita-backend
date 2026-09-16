@@ -64,13 +64,14 @@ async def test_local_temporary_password_blocks_regular_protected_routes(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_moodle_session_is_not_blocked_by_local_temporary_password(monkeypatch):
+@pytest.mark.parametrize("auth_method", ["moodle", "microsoft"])
+async def test_external_session_is_not_blocked_by_local_temporary_password(monkeypatch, auth_method):
     user = User(is_active=True, must_change_password=True)
     request = request_for()
 
     monkeypatch.setattr("app.modules.auth.dependencies.decode_access_token", lambda _token: {
         "sub": "6a2c18e6-0fc1-49bd-8b0e-d76f42ed4790",
-        "auth_method": "moodle",
+        "auth_method": auth_method,
     })
 
     async def get_user(_db, _user_id):
@@ -138,14 +139,22 @@ async def test_admin_created_local_user_gets_one_time_password(monkeypatch):
     monkeypatch.setattr(users_router.AccessService, "ensure_default_role", no_op)
     monkeypatch.setattr(users_router.AccessService, "audit", no_op)
 
+    class FakeDb:
+        async def commit(self):
+            return None
+
+        async def refresh(self, _user):
+            return None
+
     response = await users_router.create_local_user(
         LocalUserCreate(email="new.user@example.com", full_name="New User"),
         request_for("/api/users/"),
-        db=object(),
+        db=FakeDb(),
     )
 
     assert response.email == "new.user@example.com"
     assert response.must_change_password is True
     assert captured["is_active"] is True
     assert captured["must_change_password"] is True
+    assert captured["commit"] is False
     assert verify_password(response.temporary_password, str(captured["password_hash"]))

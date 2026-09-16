@@ -256,6 +256,7 @@ class UserService:
         *,
         is_active: bool = False,
         must_change_password: bool = False,
+        commit: bool = True,
     ) -> User:
 
         user = User(
@@ -268,9 +269,9 @@ class UserService:
         )
 
         db.add(user)
-
-        await db.commit()
-
-        await db.refresh(user)
+        await db.flush()
+        if commit:
+            await db.commit()
+            await db.refresh(user)
 
         return user

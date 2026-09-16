@@ -994,8 +994,14 @@ async def update_current_user_profile(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This account is managed by an external provider")
 
     current_user.full_name = payload.full_name.strip()
+    await AccessService.audit(
+        db,
+        event="user.profile_updated",
+        user_id=current_user.id,
+        request=request,
+        commit=False,
+    )
     await db.commit()
-    await AccessService.audit(db, event="user.profile_updated", user_id=current_user.id, request=request)
     return {"name": current_user.full_name}
 
 
@@ -1015,7 +1021,13 @@ async def change_current_user_password(
 
     current_user.password_hash = hash_password(payload.new_password)
     current_user.must_change_password = False
+    await AppSessionService.revoke_all_for_user(db, current_user.id, commit=False)
+    await AccessService.audit(
+        db,
+        event="user.password_changed",
+        user_id=current_user.id,
+        request=request,
+        commit=False,
+    )
     await db.commit()
-    await AppSessionService.revoke_all_for_user(db, current_user.id)
-    await AccessService.audit(db, event="user.password_changed", user_id=current_user.id, request=request)
     return {"message": "Contraseña actualizada"}

@@ -148,7 +148,7 @@ class AppSessionService:
         return result.scalar_one_or_none()
 
     @staticmethod
-    async def revoke_all_for_user(db: AsyncSession, user_id: UUID) -> None:
+    async def revoke_all_for_user(db: AsyncSession, user_id: UUID, *, commit: bool = True) -> None:
 
         stmt = (
             update(AppSession)
@@ -160,7 +160,8 @@ class AppSessionService:
         )
 
         await db.execute(stmt)
-        await db.commit()
+        if commit:
+            await db.commit()
 
     @staticmethod
     async def revoke_for_app(db: AsyncSession, app_id: UUID) -> None:
