@@ -1,8 +1,12 @@
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 import pytest
+from fastapi import HTTPException, status
 from starlette.requests import Request
 from starlette.responses import Response
 
+from app.modules.auth import router as auth_router
+from app.modules.auth.schemas import RoleAdoptionRequest
 from app.modules.apps.application_lifecycle import hash_client_secret
 from app.modules.apps.models import App
 from app.modules.apps.service import AppService
@@ -48,6 +52,53 @@ async def test_cookie_mutations_require_trusted_origin_and_session_bound_csrf(mo
         accepted,
     )
     assert protected.status_code == 204
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/auth/adopt-role", "/api/auth/logout-ticket"])
+async def test_server_to_server_auth_endpoints_do_not_require_browser_csrf(path):
+    async def accepted(_request):
+        return Response(status_code=204)
+
+    response = await csrf_and_origin_protection(
+        request_for("POST", path, origin="https://teamup.example"), accepted,
+    )
+
+    assert response.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_role_adoption_rejects_a_regular_app_token(monkeypatch):
+    app = SimpleNamespace(client_id="teamup", jit_role_adoption_enabled=True)
+
+    async def get_app(_db, _client_id):
+        return app
+
+    async def is_available(_db, _app):
+        return True
+
+    monkeypatch.setattr(auth_router.AppService, "get_by_client_id", get_app)
+    monkeypatch.setattr(auth_router.AppService, "is_available_for_sso", is_available)
+    monkeypatch.setattr(auth_router.AppService, "verify_client_secret", lambda _app, _secret: True)
+    monkeypatch.setattr(auth_router, "decode_app_token", lambda _token, audience: {
+        "jti": "session-id",
+        "sub": "user-id",
+        "roles": ["coder"],
+    })
+
+    with pytest.raises(HTTPException) as exc:
+        await auth_router.adopt_legacy_app_role(
+            RoleAdoptionRequest(
+                token="x" * 32,
+                client_id="teamup",
+                client_secret="secret",
+                role="admin",
+            ),
+            request=request_for("POST", "/api/auth/adopt-role", origin="https://teamup.example"),
+            db=object(),
+        )
+
+    assert exc.value.status_code == status.HTTP_403_FORBIDDEN
 
 
 def test_csrf_tokens_are_bound_to_session_and_expiry():

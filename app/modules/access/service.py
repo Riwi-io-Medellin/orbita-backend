@@ -125,6 +125,11 @@ class AccessService:
     @staticmethod
     async def sync_moodle_clan(db: AsyncSession, user_id: UUID, *, role_name: str | None, clan: str | None, status: str) -> None:
         if role_name != "coder":
+            await db.execute(delete(UserFederatedAttribute).where(
+                UserFederatedAttribute.user_id == user_id,
+                UserFederatedAttribute.name == "clan",
+            ))
+            await db.commit()
             return
         existing = await db.scalar(select(UserFederatedAttribute).where(
             UserFederatedAttribute.user_id == user_id,
@@ -139,8 +144,7 @@ class AccessService:
                 sync_status=status,
             ))
         else:
-            if status == "synced":
-                existing.value = clan
+            existing.value = clan if status == "synced" else None
             existing.source = "moodle"
             existing.sync_status = status
             existing.observed_at = func.now()

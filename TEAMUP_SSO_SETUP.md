@@ -9,5 +9,6 @@
 5. Crear el mapeo global `coder` → rol TeamUp `coder`.
 6. Cuando termine la migración, desactivar acceso temporal y adopción JIT. No hay vencimiento automático.
 
-El canal JIT solo adopta el rol de la misma identidad presente en el JWT, no permite indicar otro usuario
-y no expone cursos, grupos, tokens ni credenciales Moodle.
+El canal JIT solo acepta tokens de migración de la misma identidad presente en el JWT y no permite indicar
+otro usuario. No expone cursos, tokens ni credenciales Moodle; el único dato de grupo que puede liberarse
+es el claim opcional `clan`, cuando un administrador lo habilita expresamente para TeamUp.

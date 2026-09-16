@@ -26,11 +26,13 @@ class MoodleAuthenticatedUser:
 
 
 MOODLE_ROLE_MAP = {
+    "manager": "admin",
+    "gestor": "admin",
     "editingteacher": "teamleader",
     "teacher": "teamleader",
     "student": "coder",
 }
-MOODLE_ROLE_PRIORITY = ("teamleader", "coder")
+MOODLE_ROLE_PRIORITY = ("admin", "teamleader", "coder")
 
 
 def mapped_orbita_role(role_shortnames: tuple[str, ...]) -> str | None:

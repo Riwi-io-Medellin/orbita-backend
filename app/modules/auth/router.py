@@ -584,6 +584,8 @@ async def adopt_legacy_app_role(
     sub = claims.get("sub")
     if not jti or not sub:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid app token")
+    if claims.get("migration") is not True or claims.get("roles") != []:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Role adoption requires a migration token")
     session = await AppSessionService.is_session_active(db, jti)
     if session is None or session.app_id != app.id or str(session.user_id) != str(sub):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive app session")
@@ -595,7 +597,7 @@ async def adopt_legacy_app_role(
     # In particular, a user changed to guest after token issuance must not be able
     # to adopt a role during the remainder of that token's lifetime.
     access = await RoleService.resolve_access(db, user.id, app)
-    if not access.roles and not access.migration:
+    if not access.migration:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Application access is unavailable")
 
     current = await RoleService.list_roles_for_user_in_app(db, user.id, app)
@@ -626,7 +628,7 @@ async def adopt_legacy_app_role(
 @router.post("/logout-ticket", response_model=LogoutTicketResponse, summary="Create a federated logout ticket")
 async def create_logout_ticket(payload: LogoutTicketRequest, db: AsyncSession = Depends(get_db)):
     app = await AppService.get_by_client_id(db, payload.client_id)
-    if app is None or not AppService.verify_client_secret(app, payload.client_secret):
+    if app is None or not await AppService.is_available_for_sso(db, app) or not AppService.verify_client_secret(app, payload.client_secret):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid client credentials")
     if not await AppService.validate_post_logout_uri(db, app, payload.post_logout_uri):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="post_logout_uri is not registered")

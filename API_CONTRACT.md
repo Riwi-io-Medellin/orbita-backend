@@ -45,7 +45,7 @@ client changes both records atomically.
 | GET | `/auth/login` | Public | Starts Microsoft OAuth; `302` to Microsoft. |
 | GET | `/auth/callback` | Public | Microsoft callback; establishes the central cookie and redirects to the frontend or pending SSO client. |
 | GET | `/auth/providers` | Public | Returns which of Moodle, Microsoft and local login are currently available. Provider availability is enforced by the backend. |
-| POST | `/auth/moodle/login` | Public | Body: `{username,password}`. Reads active course profiles without persisting the password or token. `editingteacher`/`teacher` map to `teamleader`, `student` maps to `coder`, and unknown roles resolve to `guest`; manual/bootstrap `admin` is preserved. For coders, one unique Moodle group is retained as the optional clan attribute. |
+| POST | `/auth/moodle/login` | Public | Body: `{username,password}`. Reads active course profiles without persisting the password or token. `manager`/`gestor` map to `admin`, `editingteacher`/`teacher` to `teamleader`, `student` to `coder`, and unknown roles resolve to `guest`. For coders, one unique Moodle group is retained as the optional clan attribute. |
 | POST | `/auth/moodle/password-reset` | Public | Body: `{identifier,identifier_type}` where `identifier_type` is `username` or `email`. Requests Moodle's password-reset flow through Orbita without a Moodle token and always returns a generic confirmation when accepted. |
 | POST | `/auth/login` | Public | Local email/password login. Sets the central cookie. `401` invalid credentials; `403` inactive user. |
 | GET | `/auth/csrf` | Session | Returns a short-lived, session-bound token for `X-CSRF-Token` on cookie-authenticated mutations. |
