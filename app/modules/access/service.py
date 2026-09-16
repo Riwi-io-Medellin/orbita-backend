@@ -26,6 +26,16 @@ FALLBACK_ROLE_SOURCE = "fallback"
 ROLE_PRIORITY = (PLATFORM_ADMIN_ROLE, "teamleader", "coder", DEFAULT_ROLE)
 
 
+def resolve_effective_role(names_by_source: dict[str, str]) -> str:
+    """Resolve the one role used for authorization from its independent sources."""
+    return (
+        PLATFORM_ADMIN_ROLE if PLATFORM_ADMIN_ROLE in names_by_source.values()
+        else names_by_source.get(MOODLE_ROLE_SOURCE)
+        or names_by_source.get(MANUAL_ROLE_SOURCE)
+        or DEFAULT_ROLE
+    )
+
+
 class AccessService:
     @staticmethod
     async def seed(db: AsyncSession) -> None:
@@ -89,12 +99,7 @@ class AccessService:
             .where(user_global_role_sources.c.user_id == user_id)
         )).all()
         names_by_source = {source: name for name, source in rows}
-        effective = (
-            PLATFORM_ADMIN_ROLE if PLATFORM_ADMIN_ROLE in names_by_source.values()
-            else names_by_source.get(MOODLE_ROLE_SOURCE)
-            or names_by_source.get(MANUAL_ROLE_SOURCE)
-            or DEFAULT_ROLE
-        )
+        effective = resolve_effective_role(names_by_source)
         role_id = await db.scalar(select(GlobalRole.id).where(GlobalRole.name == effective))
         await db.execute(delete(user_global_roles).where(user_global_roles.c.user_id == user_id))
         if role_id is not None:
