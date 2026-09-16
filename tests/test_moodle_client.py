@@ -57,7 +57,11 @@ async def test_moodle_client_only_queries_the_authenticated_users_profile():
 
 def test_maps_moodle_roles_by_privilege():
     assert mapped_orbita_role(("student", "teacher")) == "teamleader"
-    assert mapped_orbita_role(("student", "gestor")) == "admin"
+    assert mapped_orbita_role(("editingteacher",)) == "teamleader"
+    assert mapped_orbita_role(("student",)) == "coder"
+    assert mapped_orbita_role(("manager",)) is None
+    assert mapped_orbita_role(("gestor",)) is None
+    assert mapped_orbita_role(("manager", "teacher")) == "teamleader"
     assert mapped_orbita_role(("unknown",)) is None
 
 
