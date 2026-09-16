@@ -7,6 +7,15 @@ class PasswordLoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
 
+
+class ProfileUpdateRequest(BaseModel):
+    full_name: str = Field(min_length=1, max_length=255)
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=8, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
     model_config = {
         "json_schema_extra": {
             "example": {"email": "user@example.com", "password": "correct-horse-battery-staple"}
