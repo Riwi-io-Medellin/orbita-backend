@@ -253,6 +253,10 @@ class UserService:
         email: str,
         full_name: str,
         password_hash: str,
+        *,
+        is_active: bool = False,
+        must_change_password: bool = False,
+        commit: bool = True,
     ) -> User:
 
         user = User(
@@ -260,12 +264,14 @@ class UserService:
             email=email,
             full_name=full_name,
             password_hash=password_hash,
+            is_active=is_active,
+            must_change_password=must_change_password,
         )
 
         db.add(user)
-
-        await db.commit()
-
-        await db.refresh(user)
+        await db.flush()
+        if commit:
+            await db.commit()
+            await db.refresh(user)
 
         return user

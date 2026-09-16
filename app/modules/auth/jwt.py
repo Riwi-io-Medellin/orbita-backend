@@ -14,6 +14,7 @@ def create_access_token(
     user_id: str,
     email: str,
     roles: list[str],
+    auth_method: str = "local",
 ) -> str:
 
     expire = datetime.now(UTC) + timedelta(
@@ -24,6 +25,7 @@ def create_access_token(
         "sub": user_id,
         "email": email,
         "roles": roles,
+        "auth_method": auth_method,
         "jti": str(uuid.uuid4()),
         "iat": datetime.now(UTC),
         "exp": expire,
