@@ -63,7 +63,7 @@ Las dependencias deben apuntar hacia reglas de negocio, no hacia detalles HTTP. 
 Mantener separadas estas tres capas:
 
 - El rol global `admin`: autoriza la administración de la plataforma y habilita las aplicaciones de catálogo que se le asignen. `teamleader` y `coder` solo habilitan aplicaciones de catálogo; `guest` no habilita ninguna. Ninguno expresa permisos internos de una app SSO.
-- Roles por aplicación: pertenecen a un cliente SSO, habilitan su tarjeta, autorizan el handoff y viajan en el claim `roles` del JWT con `aud=client_id`.
+- Roles por aplicación: pertenecen a un cliente SSO, habilitan su tarjeta, autorizan el handoff y viajan en el claim `roles` del JWT con `aud=client_id`. Una aplicación puede declarar cardinalidad única, mapeos desde roles globales y acceso temporal de migración; `guest` siempre queda excluido y una asignación explícita tiene prioridad sobre un mapeo.
 
 Hay dos políticas de aplicación:
 
@@ -97,6 +97,8 @@ El protocolo es un authorization-code flow interno, descrito por `Orbita SSO Cli
 3. Órbita devuelve un código opaco, almacenado como hash, de un solo uso y vigencia aproximada de 60 segundos.
 4. El backend cliente canjea el código en `/api/auth/token` usando su secreto, nunca desde el navegador.
 5. Órbita entrega un JWT RS256 de aproximadamente 30 minutos con `sub`, `email`, `name`, `aud`, `roles`, `jti` y `exp`.
+
+Los claims `migration` y `attributes` son extensiones opcionales autorizadas por cliente. TeamUp usa un canal JIT con secreto de cliente para adoptar un único rol legado, y logout federado mediante un ticket corto de un solo uso; ningún secreto o token se transporta en URLs.
 6. El cliente verifica firma, `kid`, expiración y que `aud` sea exactamente su propio `client_id`, y crea su sesión local.
 
 Invariantes que no se negocian:

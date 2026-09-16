@@ -14,7 +14,7 @@ from app.modules.access.models import (
     user_global_roles,
     user_global_role_sources,
 )
-from app.modules.users.models import User
+from app.modules.users.models import User, UserFederatedAttribute
 from app.modules.apps.models import App, UserAppRole
 
 DEFAULT_ROLE = "guest"
@@ -123,6 +123,30 @@ class AccessService:
         return await AccessService.reconcile_effective_role(db, user_id)
 
     @staticmethod
+    async def sync_moodle_clan(db: AsyncSession, user_id: UUID, *, role_name: str | None, clan: str | None, status: str) -> None:
+        if role_name != "coder":
+            return
+        existing = await db.scalar(select(UserFederatedAttribute).where(
+            UserFederatedAttribute.user_id == user_id,
+            UserFederatedAttribute.name == "clan",
+        ))
+        if existing is None:
+            db.add(UserFederatedAttribute(
+                user_id=user_id,
+                name="clan",
+                value=clan if status == "synced" else None,
+                source="moodle",
+                sync_status=status,
+            ))
+        else:
+            if status == "synced":
+                existing.value = clan
+            existing.source = "moodle"
+            existing.sync_status = status
+            existing.observed_at = func.now()
+        await db.commit()
+
+    @staticmethod
     async def set_manual_global_role(db: AsyncSession, user_id: UUID, role_id: UUID) -> str:
         role = await db.get(GlobalRole, role_id)
         if role is None or role.name == DEFAULT_ROLE:
@@ -181,16 +205,6 @@ class AccessService:
                 Application.access_policy == ApplicationAccessPolicy.CATALOG.value,
             )
         )
-        app_role_ids = (
-            select(Application.id)
-            .join(App, App.application_id == Application.id)
-            .join(UserAppRole, UserAppRole.app_id == App.id)
-            .where(
-                UserAppRole.user_id == user_id,
-                Application.is_active.is_(True),
-                App.is_active.is_(True),
-            )
-        )
         direct_ids = (
             select(Application.id)
             .join(user_applications, user_applications.c.application_id == Application.id)
@@ -200,13 +214,26 @@ class AccessService:
                 Application.access_policy == ApplicationAccessPolicy.CATALOG.value,
             )
         )
-        authorized_ids = union(legacy_ids, app_role_ids, direct_ids).subquery()
-        result = await db.scalars(
+        authorized_ids = union(legacy_ids, direct_ids).subquery()
+        catalog = list(await db.scalars(
             select(Application)
             .join(authorized_ids, authorized_ids.c.id == Application.id)
-            .order_by(Application.name)
-        )
-        return list(result)
+        ))
+
+        # SSO apps use the same resolver as authorize/token so launcher visibility
+        # cannot bypass guest suppression, role cardinality or migration policy.
+        from app.modules.apps.service import RoleService
+        sso_rows = (await db.execute(
+            select(Application, App)
+            .join(App, App.application_id == Application.id)
+            .where(Application.is_active.is_(True), App.is_active.is_(True))
+        )).all()
+        authorized = {application.id: application for application in catalog}
+        for application, app in sso_rows:
+            access = await RoleService.resolve_access(db, user_id, app)
+            if access.roles or access.migration:
+                authorized[application.id] = application
+        return sorted(authorized.values(), key=lambda application: application.name.lower())
 
     @staticmethod
     async def list_global_roles(db: AsyncSession) -> list[GlobalRole]:

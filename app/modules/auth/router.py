@@ -19,6 +19,7 @@ from app.modules.auth.dependencies import get_current_user
 
 from fastapi import Depends
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.session import get_db
@@ -39,19 +40,25 @@ from app.modules.auth.schemas import (
     AuthenticationProvidersResponse,
     IntrospectRequest,
     IntrospectResponse,
+    LogoutTicketRequest,
+    LogoutTicketResponse,
     MoodleLoginRequest,
     MoodlePasswordResetRequest,
     PasswordLoginRequest,
     RegisterRequest,
     TokenExchangeRequest,
     TokenResponse,
+    RoleAdoptionRequest,
+    RoleAdoptionResponse,
 )
 from app.modules.auth.service import (
     AppSessionService,
     AuthorizationCodeService,
+    LogoutTicketService,
     build_authorize_redirect,
 )
 from app.modules.auth.moodle import MoodleClient, MoodleCredentialsError, MoodleUnavailableError, mapped_orbita_role
+from app.modules.users.models import UserFederatedAttribute
 from app.modules.auth.rate_limit import MoodleLoginRateLimiter, MoodleRateLimitedError
 from app.modules.auth.csrf import issue_csrf_token
 from app.modules.identity.service import (
@@ -277,6 +284,13 @@ async def moodle_login(
     resolved_role = await AccessService.sync_moodle_role(
         db, resolution.user.id, mapped_orbita_role(moodle_user.role_shortnames),
     )
+    await AccessService.sync_moodle_clan(
+        db,
+        resolution.user.id,
+        role_name=mapped_orbita_role(moodle_user.role_shortnames),
+        clan=moodle_user.clan_name,
+        status=moodle_user.clan_status,
+    )
     await AccessService.audit(
         db,
         event="access.moodle_role_synchronized",
@@ -465,13 +479,24 @@ async def exchange_code_for_app_token(
         if user is None or _user_is_unavailable(user):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User no longer available")
 
-        roles = await RoleService.list_roles_for_user_in_app(db, user.id, app)
-        if not roles:
+        access = await RoleService.resolve_access(db, user.id, app)
+        if not access.roles and not access.migration:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not provisioned for this app")
+
+        attributes: dict[str, str] = {}
+        if access.roles == ["coder"] and "clan" in (app.released_claims or []):
+            clan = await db.scalar(select(UserFederatedAttribute.value).where(
+                UserFederatedAttribute.user_id == user.id,
+                UserFederatedAttribute.name == "clan",
+            ))
+            if clan:
+                attributes["clan"] = clan
 
         access_token, jti, expires_at = create_app_token(
             user_id=str(user.id), email=user.email, name=user.full_name,
-            client_id=app.client_id, roles=roles,
+            client_id=app.client_id, roles=access.roles,
+            migration=access.migration,
+            attributes=attributes,
         )
         await AppSessionService.record_app_session(db, jti, user, app, expires_at)
         await db.commit()
@@ -524,9 +549,9 @@ async def introspect_app_token(
     if user is None or _user_is_unavailable(user):
         return IntrospectResponse(active=False)
 
-    current_roles = await RoleService.list_roles_for_user_in_app(db, user.id, app)
+    access = await RoleService.resolve_access(db, user.id, app)
     token_roles = claims.get("roles")
-    if not current_roles or not isinstance(token_roles, list) or set(current_roles) != set(token_roles):
+    if not isinstance(token_roles, list) or set(access.roles) != set(token_roles) or bool(claims.get("migration")) != access.migration:
         return IntrospectResponse(active=False)
 
     return IntrospectResponse(
@@ -536,6 +561,96 @@ async def introspect_app_token(
         roles=claims.get("roles"),
         exp=claims.get("exp"),
     )
+
+
+@router.post("/adopt-role", response_model=RoleAdoptionResponse, summary="Adopt a legacy app role during migration")
+async def adopt_legacy_app_role(
+    payload: RoleAdoptionRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    app = await AppService.get_by_client_id(db, payload.client_id)
+    if (
+        app is None
+        or not await AppService.is_available_for_sso(db, app)
+        or not AppService.verify_client_secret(app, payload.client_secret)
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid client credentials")
+    if not app.jit_role_adoption_enabled:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Role adoption is disabled")
+
+    claims = decode_app_token(payload.token, audience=payload.client_id)
+    jti = claims.get("jti")
+    sub = claims.get("sub")
+    if not jti or not sub:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid app token")
+    session = await AppSessionService.is_session_active(db, jti)
+    if session is None or session.app_id != app.id or str(session.user_id) != str(sub):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive app session")
+    user = await UserService.get_user_by_id(db, session.user_id)
+    if user is None or _user_is_unavailable(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User unavailable")
+
+    # Re-evaluate current platform access instead of trusting claims issued earlier.
+    # In particular, a user changed to guest after token issuance must not be able
+    # to adopt a role during the remainder of that token's lifetime.
+    access = await RoleService.resolve_access(db, user.id, app)
+    if not access.roles and not access.migration:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Application access is unavailable")
+
+    current = await RoleService.list_roles_for_user_in_app(db, user.id, app)
+    if current:
+        if current == [payload.role]:
+            await AppSessionService.revoke_for_user_in_app(db, user.id, app.id)
+            return RoleAdoptionResponse(role=payload.role)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An explicit app role already exists")
+
+    role = await RoleService.get_by_app_and_name(db, app, payload.role)
+    if role is None or not role.is_active:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown or inactive app role")
+    try:
+        await RoleService.assign_role_to_user(db, user.id, app, role, source="jit_migration")
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    await AppSessionService.revoke_for_user_in_app(db, user.id, app.id)
+    await AccessService.audit(
+        db,
+        event="access.app_role_adopted",
+        user_id=user.id,
+        application_id=app.application_id,
+        request=request,
+    )
+    return RoleAdoptionResponse(role=payload.role)
+
+
+@router.post("/logout-ticket", response_model=LogoutTicketResponse, summary="Create a federated logout ticket")
+async def create_logout_ticket(payload: LogoutTicketRequest, db: AsyncSession = Depends(get_db)):
+    app = await AppService.get_by_client_id(db, payload.client_id)
+    if app is None or not AppService.verify_client_secret(app, payload.client_secret):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid client credentials")
+    if not await AppService.validate_post_logout_uri(db, app, payload.post_logout_uri):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="post_logout_uri is not registered")
+    ticket = await LogoutTicketService.issue(db, app, payload.post_logout_uri)
+    return LogoutTicketResponse(logout_url=f"{settings.resolved_public_base_url}/api/auth/end-session?ticket={ticket}")
+
+
+@router.get("/end-session", summary="Consume a federated logout ticket")
+async def end_federated_session(request: Request, ticket: str = Query(min_length=32, max_length=512), db: AsyncSession = Depends(get_db)):
+    row = await LogoutTicketService.redeem(db, ticket)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired logout ticket")
+    user = await _get_optional_current_user(request, db)
+    if user is not None:
+        await AppSessionService.revoke_all_for_user(db, user.id)
+    response = RedirectResponse(row.post_logout_uri, status_code=302)
+    response.delete_cookie(
+        key=settings.access_cookie_name,
+        httponly=True,
+        secure=_COOKIE_SECURE,
+        samesite=_COOKIE_SAMESITE,
+        path="/",
+    )
+    return response
 
 @router.post(
     "/logout",

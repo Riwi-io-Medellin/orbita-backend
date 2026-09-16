@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,9 +11,13 @@ from app.modules.apps.schemas import (
     AppCreated,
     AppRead,
     AppSecretRotated,
+    AppPolicyUpdate,
     AppStatusUpdate,
     RedirectURICreate,
     RedirectURIRead,
+    PostLogoutURICreate,
+    PostLogoutURIRead,
+    GlobalRoleMappingUpsert,
     RoleAssign,
     RoleCreate,
     RoleRead,
@@ -21,6 +25,7 @@ from app.modules.apps.schemas import (
 )
 from app.modules.apps.service import AppService, RoleService
 from app.modules.apps.application_lifecycle import ApplicationLifecycleService
+from app.modules.access.service import AccessService
 from app.modules.users.schemas import BulkRoleAssignmentResult, BulkUserIds
 from app.schemas import ErrorDetail
 
@@ -71,6 +76,10 @@ async def create_app(
             description=payload.description,
             url=payload.url,
             icon=payload.icon,
+            role_cardinality=payload.role_cardinality,
+            migration_access_enabled=payload.migration_access_enabled,
+            jit_role_adoption_enabled=payload.jit_role_adoption_enabled,
+            released_claims=payload.released_claims,
         )
     except IntegrityError:
         await db.rollback()
@@ -85,6 +94,10 @@ async def create_app(
         client_id=app.client_id,
         name=app.name,
         is_active=app.is_active,
+        role_cardinality=app.role_cardinality,
+        migration_access_enabled=app.migration_access_enabled,
+        jit_role_adoption_enabled=app.jit_role_adoption_enabled,
+        released_claims=app.released_claims,
         client_secret=raw_secret,
     )
 
@@ -147,9 +160,63 @@ async def rotate_app_secret(
         client_id=app.client_id,
         name=app.name,
         is_active=app.is_active,
+        role_cardinality=app.role_cardinality,
+        migration_access_enabled=app.migration_access_enabled,
+        jit_role_adoption_enabled=app.jit_role_adoption_enabled,
+        released_claims=app.released_claims,
         client_secret=raw_secret,
         previous_secret_expires_at=expires_at,
     )
+
+
+@router.put("/{client_id}/policy", response_model=AppRead, summary="Update an app's SSO policy")
+async def update_app_policy(
+    client_id: str,
+    payload: AppPolicyUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    app = await AppService.get_by_client_id(db, client_id)
+    if app is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="App not found")
+    updated = await AppService.update_policy(
+        db,
+        app,
+        role_cardinality=payload.role_cardinality,
+        migration_access_enabled=payload.migration_access_enabled,
+        jit_role_adoption_enabled=payload.jit_role_adoption_enabled,
+        released_claims=payload.released_claims,
+    )
+    await AccessService.audit(
+        db,
+        event="access.app_policy_updated",
+        application_id=app.application_id,
+        request=request,
+    )
+    return updated
+
+
+@router.post("/{client_id}/post-logout-uris", response_model=PostLogoutURIRead, status_code=status.HTTP_201_CREATED)
+async def add_post_logout_uri(client_id: str, payload: PostLogoutURICreate, db: AsyncSession = Depends(get_db)):
+    app = await AppService.get_by_client_id(db, client_id)
+    if app is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="App not found")
+    try:
+        return await AppService.add_post_logout_uri(db, app, payload.post_logout_uri)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Post logout URI already registered")
+
+
+@router.put("/{client_id}/global-role-mapping", status_code=status.HTTP_204_NO_CONTENT)
+async def upsert_global_role_mapping(client_id: str, payload: GlobalRoleMappingUpsert, db: AsyncSession = Depends(get_db)):
+    app = await AppService.get_by_client_id(db, client_id)
+    if app is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="App not found")
+    try:
+        await AppService.upsert_global_role_mapping(db, app, payload.global_role, payload.app_role)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.post(
@@ -257,7 +324,10 @@ async def assign_role(
             detail="Role not found",
         )
 
-    await RoleService.assign_role_to_user(db, payload.user_id, app, role)
+    try:
+        await RoleService.assign_role_to_user(db, payload.user_id, app, role)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.post(
@@ -289,7 +359,12 @@ async def bulk_assign_role(
             detail="Role not found",
         )
 
-    updated_ids, not_found_ids = await RoleService.bulk_assign_role_to_users(db, payload.user_ids, app, role)
+    try:
+        updated_ids, not_found_ids = await RoleService.bulk_assign_role_to_users(
+            db, payload.user_ids, app, role,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return BulkRoleAssignmentResult(updated_user_ids=updated_ids, not_found_ids=not_found_ids)
 
 

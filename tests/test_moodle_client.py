@@ -5,7 +5,7 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from app.modules.auth.moodle import MoodleClient, MoodleCredentialsError, mapped_orbita_role
+from app.modules.auth.moodle import MoodleClient, MoodleCredentialsError, mapped_orbita_role, resolve_moodle_clan
 
 
 def moodle_settings():
@@ -43,7 +43,11 @@ async def test_moodle_client_only_queries_the_authenticated_users_profile():
         assert fields["wsfunction"] == ["core_user_get_course_user_profiles"]
         assert fields["userlist[0][userid]"] == ["1909"]
         course_id = fields["userlist[0][courseid]"][0]
-        return httpx.Response(200, json=[{"id": 1909, "roles": [{"shortname": "student" if course_id == "101" else "teacher"}]}])
+        return httpx.Response(200, json=[{
+            "id": 1909,
+            "roles": [{"shortname": "student" if course_id == "101" else "teacher"}],
+            "groups": [{"name": "McCarthy (PM)"}],
+        }])
 
     client = MoodleClient(moodle_settings(), transport=httpx.MockTransport(handler))
     user = await client.authenticate("ana", "secret")
@@ -52,6 +56,8 @@ async def test_moodle_client_only_queries_the_authenticated_users_profile():
     assert user.email == "ana@riwi.io"
     assert user.full_name == "Ana Riwi"
     assert user.role_shortnames == ("student", "teacher")
+    assert user.clan_name == "McCarthy (PM)"
+    assert user.clan_status == "synced"
     assert len(calls) == 6
 
 
@@ -63,6 +69,12 @@ def test_maps_moodle_roles_by_privilege():
     assert mapped_orbita_role(("gestor",)) is None
     assert mapped_orbita_role(("manager", "teacher")) == "teamleader"
     assert mapped_orbita_role(("unknown",)) is None
+
+
+def test_resolves_only_one_unique_moodle_group_as_clan():
+    assert resolve_moodle_clan(("McCarthy (PM)", "McCarthy (PM)")) == ("McCarthy (PM)", "synced")
+    assert resolve_moodle_clan(()) == (None, "missing")
+    assert resolve_moodle_clan(("McCarthy (PM)", "Tesla (AM)")) == (None, "ambiguous")
 
 
 @pytest.mark.asyncio

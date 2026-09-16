@@ -114,3 +114,26 @@ class IntrospectResponse(BaseModel):
             }
         }
     }
+
+
+class RoleAdoptionRequest(BaseModel):
+    token: str = Field(min_length=32, max_length=8192)
+    client_id: str = Field(min_length=2, max_length=255)
+    client_secret: str = Field(min_length=1, max_length=512)
+    role: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]*$", max_length=80)
+
+
+class RoleAdoptionResponse(BaseModel):
+    role: str
+    reauthorize: bool = True
+
+
+class LogoutTicketRequest(BaseModel):
+    client_id: str = Field(min_length=2, max_length=255)
+    client_secret: str = Field(min_length=1, max_length=512)
+    post_logout_uri: str = Field(min_length=8, max_length=2048)
+
+
+class LogoutTicketResponse(BaseModel):
+    logout_url: str
+    expires_in: int = 60

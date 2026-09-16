@@ -61,6 +61,10 @@ class ApplicationLifecycleService:
         description: str,
         url: str,
         icon: str | None,
+        role_cardinality: str = "multiple",
+        migration_access_enabled: bool = False,
+        jit_role_adoption_enabled: bool = False,
+        released_claims: list[str] | None = None,
     ) -> tuple[App, str]:
         """Create the launcher tile and SSO client atomically."""
         raw_secret = secrets.token_urlsafe(32)
@@ -80,6 +84,10 @@ class ApplicationLifecycleService:
             client_id=client_id,
             name=name,
             client_secret_hash=hash_client_secret(raw_secret),
+            role_cardinality=role_cardinality,
+            migration_access_enabled=migration_access_enabled,
+            jit_role_adoption_enabled=jit_role_adoption_enabled,
+            released_claims=released_claims or [],
         )
         db.add(app)
         await db.commit()
