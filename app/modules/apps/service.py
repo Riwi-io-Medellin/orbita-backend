@@ -521,10 +521,10 @@ class RoleService:
         app: App,
         limit: int = 100,
         offset: int = 0,
-    ) -> list[tuple[UUID, str, str, UUID, str]]:
+    ) -> list[tuple[UUID, str, str, str]]:
 
         query = (
-            select(User.id, User.email, User.full_name, Role.id, Role.name)
+            select(User.id, User.email, User.full_name, Role.name)
             .join(UserAppRole, UserAppRole.user_id == User.id)
             .join(Role, Role.id == UserAppRole.role_id)
             .where(UserAppRole.app_id == app.id)

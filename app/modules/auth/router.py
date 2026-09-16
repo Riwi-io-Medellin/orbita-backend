@@ -15,7 +15,7 @@ from app.modules.auth.microsoft import (
     validate_microsoft_claims,
 )
 
-from app.modules.auth.dependencies import get_authenticated_user, get_current_user
+from app.modules.auth.dependencies import get_current_user
 
 from fastapi import Depends
 
@@ -45,8 +45,6 @@ from app.modules.auth.schemas import (
     MoodleLoginRequest,
     MoodlePasswordResetRequest,
     PasswordLoginRequest,
-    PasswordChangeRequest,
-    ProfileUpdateRequest,
     RegisterRequest,
     TokenExchangeRequest,
     TokenResponse,
@@ -198,7 +196,7 @@ async def authentication_providers(db: AsyncSession = Depends(get_db)):
 )
 async def csrf_token(
     request: Request,
-    current_user: User = Depends(get_authenticated_user),
+    current_user: User = Depends(get_current_user),
 ):
     """Returns a short-lived CSRF token bound to the current central-session JWT id."""
     payload = decode_access_token(request.cookies.get(settings.access_cookie_name, ""))
@@ -921,7 +919,7 @@ async def register_user(
     },
 )
 async def get_current_user_profile(
-    current_user: User = Depends(get_authenticated_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Returns the caller's identity plus their global roles (not per-app roles), read from the central session cookie."""
@@ -933,37 +931,4 @@ async def get_current_user_profile(
         "active": current_user.is_active,
         "roles": roles,
         "role": roles[0] if roles else None,
-        "must_change_password": current_user.must_change_password,
-        "is_local_account": current_user.is_local_account,
     }
-
-
-@router.patch("/me", summary="Update the current local user's profile")
-async def update_current_user_profile(
-    payload: ProfileUpdateRequest,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    if not current_user.is_local_account:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This account is managed by an external provider")
-    current_user.full_name = payload.full_name.strip()
-    await db.commit()
-    return {"name": current_user.full_name}
-
-
-@router.post("/me/password", summary="Change the current local user's password")
-async def change_current_user_password(
-    payload: PasswordChangeRequest,
-    current_user: User = Depends(get_authenticated_user),
-    db: AsyncSession = Depends(get_db),
-):
-    if not current_user.is_local_account:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This account is managed by an external provider")
-    if not verify_password(payload.current_password, current_user.password_hash):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="La contraseña actual no coincide")
-    if payload.current_password == payload.new_password:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="La nueva contraseña debe ser diferente")
-    current_user.password_hash = hash_password(payload.new_password)
-    current_user.must_change_password = False
-    await db.commit()
-    return {"message": "Contraseña actualizada"}

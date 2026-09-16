@@ -510,6 +510,6 @@ async def list_app_users(
     rows = await RoleService.list_user_roles_for_app(db, app, limit=limit, offset=offset)
 
     return [
-        UserAppRoleRead(user_id=user_id, email=email, full_name=full_name, role_id=role_id, role_name=role_name)
-        for user_id, email, full_name, role_id, role_name in rows
+        UserAppRoleRead(user_id=user_id, email=email, full_name=full_name, role_name=role_name)
+        for user_id, email, full_name, role_name in rows
     ]

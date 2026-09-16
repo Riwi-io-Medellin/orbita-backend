@@ -42,12 +42,6 @@ class User(Base):
 
     password_hash: Mapped[str | None] = mapped_column(String(255))
 
-    must_change_password: Mapped[bool] = mapped_column(
-        Boolean,
-        default=False,
-        nullable=False,
-    )
-
     deleted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
@@ -65,10 +59,6 @@ class User(Base):
         onupdate=func.now(),
         nullable=False,
     )
-
-    @property
-    def is_local_account(self) -> bool:
-        return self.password_hash is not None and self.microsoft_id is None
 
 
 class UserFederatedAttribute(Base):
