@@ -132,7 +132,7 @@ async def update_application_status(
 async def list_global_roles(
     db: AsyncSession = Depends(get_db),
 ):
-    """Returns the fixed seeded set (admin/staff/coder) used to gate launcher visibility. Not user-editable — grant/revoke them per user or per app instead."""
+    """Returns the fixed seeded set (admin/teamleader/coder/guest) used to gate launcher visibility."""
     return await AccessService.list_global_roles(db)
 
 
@@ -165,7 +165,10 @@ async def grant_application_role(
     if role is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Global role not found")
 
-    await AccessService.grant_application_role(db, application_id, global_role_id)
+    try:
+        await AccessService.grant_application_role(db, application_id, global_role_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.delete(

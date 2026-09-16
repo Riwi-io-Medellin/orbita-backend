@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.session import get_db
 from app.config.settings import settings
+from app.modules.access.service import AccessService, PLATFORM_ADMIN_ROLE
 from app.modules.auth.jwt import decode_access_token
 from app.modules.users.models import User
 from app.modules.users.service import UserService
@@ -56,9 +57,9 @@ async def get_current_user(
 
 async def get_current_platform_admin(
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ) -> User:
-
-    if not current_user.is_platform_admin:
+    if not await AccessService.has_global_role(db, current_user.id, PLATFORM_ADMIN_ROLE):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Platform admin privileges required",

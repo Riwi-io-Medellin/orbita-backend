@@ -62,18 +62,17 @@ Las dependencias deben apuntar hacia reglas de negocio, no hacia detalles HTTP. 
 
 Mantener separadas estas tres capas:
 
-- `is_platform_admin`: autoriza la administración de la plataforma. Es el límite real para usuarios, registro SSO, roles y auditoría.
-- Roles globales (`admin`, `staff`, `coder`): habilitan aplicaciones de catálogo; no expresan permisos internos de una app SSO.
-- Roles por aplicación: pertenecen a un cliente SSO, habilitan su tarjeta, autorizan el handoff y viajan en el claim `roles` del JWT con `aud=client_id`.
+- El rol global `admin`: autoriza la administración de la plataforma y habilita las aplicaciones de catálogo que se le asignen. `teamleader` y `coder` solo habilitan aplicaciones de catálogo; `guest` no habilita ninguna. Ninguno expresa permisos internos de una app SSO.
+- Roles por aplicación: pertenecen a un cliente SSO, habilitan su tarjeta, autorizan el handoff y viajan en el claim `roles` del JWT con `aud=client_id`. Una aplicación puede declarar cardinalidad única, mapeos desde roles globales y acceso temporal de migración; `guest` siempre queda excluido y una asignación explícita tiene prioridad sobre un mapeo.
 
 Hay dos políticas de aplicación:
 
 - `catalog`: es un lanzador. El acceso proviene de un rol global o de una asignación directa; Órbita no emite un token SSO.
 - `sso_role`: su visibilidad y autenticación dependen de al menos un rol asignado en esa app. Los grants directos y globales no deben saltarse esta regla.
 
-Un usuario nuevo comienza inactivo. `PLATFORM_ADMIN_EMAILS` activa y promueve cuentas administrativas durante el arranque. La eliminación de usuarios es lógica (`deleted_at` + `is_active=false`), no física.
+Un usuario nuevo comienza inactivo. `PLATFORM_ADMIN_EMAILS` otorga el rol global `admin` a cuentas existentes durante el arranque. Las cuentas sin rol quedan como `guest`; Moodle sincroniza el rol efectivo desde sus cursos. La eliminación de usuarios es lógica (`deleted_at` + `is_active=false`), no física.
 
-El frontend puede ocultar opciones, pero nunca es un límite de seguridad. Toda ruta administrativa debe depender de `get_current_platform_admin`; toda ruta autenticada debe validar en backend la cookie y que el usuario siga activo.
+El frontend puede ocultar opciones, pero nunca es un límite de seguridad. Toda ruta administrativa debe depender de `get_current_platform_admin`, que valida el rol global `admin`; toda ruta autenticada debe validar en backend la cookie y que el usuario siga activo.
 
 ## Flujo de sesión de Órbita
 
@@ -98,6 +97,8 @@ El protocolo es un authorization-code flow interno, descrito por `Orbita SSO Cli
 3. Órbita devuelve un código opaco, almacenado como hash, de un solo uso y vigencia aproximada de 60 segundos.
 4. El backend cliente canjea el código en `/api/auth/token` usando su secreto, nunca desde el navegador.
 5. Órbita entrega un JWT RS256 de aproximadamente 30 minutos con `sub`, `email`, `name`, `aud`, `roles`, `jti` y `exp`.
+
+Los claims `migration` y `attributes` son extensiones opcionales autorizadas por cliente. TeamUp usa un canal JIT con secreto de cliente para adoptar un único rol legado, y logout federado mediante un ticket corto de un solo uso; ningún secreto o token se transporta en URLs.
 6. El cliente verifica firma, `kid`, expiración y que `aud` sea exactamente su propio `client_id`, y crea su sesión local.
 
 Invariantes que no se negocian:

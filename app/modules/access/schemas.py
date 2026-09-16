@@ -68,8 +68,8 @@ class GlobalRoleRead(BaseModel):
         "json_schema_extra": {
             "example": {
                 "id": "ad9633ac-9f3f-4a9f-9aeb-6e9dbe225fe1",
-                "name": "staff",
-                "description": "Personal interno de Riwi",
+                "name": "teamleader",
+                "description": "Liderazgo académico de Riwi",
             }
         },
     }

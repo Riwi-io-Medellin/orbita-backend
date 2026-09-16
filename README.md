@@ -5,7 +5,7 @@ API central de identidad, acceso, catálogo y SSO de Órbita, desarrollada con F
 ## Requisitos
 
 - Python 3.11+
-- Docker (para Postgres local) o una instancia de Postgres 17 accesible
+- Docker (para Postgres local) o una instancia de Postgres 18 accesible
 
 ## Instalación
 
@@ -61,6 +61,8 @@ El trabajo de seguridad y operación pendiente está priorizado en [SECURITY_HAR
 | GET | `/api/auth/authorize` | Inicia un handoff SSO |
 | POST | `/api/auth/token` | Canje server-to-server por JWT de aplicación |
 | POST | `/api/auth/introspect` | Consulta optativa de sesión emitida |
+| POST | `/api/auth/adopt-role` | Migración JIT de un rol local para el mismo sujeto |
+| POST | `/api/auth/logout-ticket` | Ticket de logout federado |
 | GET | `/api/applications/` | Catálogo autorizado del usuario |
 | * | `/api/apps/*` | Registro SSO, callbacks, roles y miembros |
 | * | `/api/users/*` | Administración de usuarios, accesos e identidades externas |
@@ -73,4 +75,4 @@ python -m alembic heads
 python -m pytest -q
 ```
 
-El arranque ejecuta `alembic upgrade head` y siembra roles globales/provisionamiento administrativo. En despliegues con múltiples réplicas, coordinar el arranque para evitar carreras de migración.
+El arranque siembra roles globales/provisionamiento administrativo. Aplicar `alembic upgrade head` antes de iniciar despliegues. Los roles globales son `admin`, `teamleader`, `coder` y `guest`; Moodle sincroniza los tres primeros desde los roles activos de sus cursos.

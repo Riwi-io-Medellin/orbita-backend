@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.base import Base
@@ -49,6 +49,11 @@ class App(Base):
         nullable=False,
     )
 
+    role_cardinality: Mapped[str] = mapped_column(String(16), server_default="multiple", nullable=False)
+    migration_access_enabled: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)
+    jit_role_adoption_enabled: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)
+    released_claims: Mapped[list[str]] = mapped_column(JSONB, server_default="[]", nullable=False)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -85,6 +90,15 @@ class AppRedirectURI(Base):
         String(2048),
         nullable=False,
     )
+
+
+class AppPostLogoutURI(Base):
+    __tablename__ = "app_post_logout_uris"
+    __table_args__ = (UniqueConstraint("app_id", "post_logout_uri", name="uq_app_post_logout_uri"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    app_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("apps.id", ondelete="CASCADE"), nullable=False)
+    post_logout_uri: Mapped[str] = mapped_column(String(2048), nullable=False)
 
 
 class Role(Base):
@@ -154,8 +168,20 @@ class UserAppRole(Base):
         nullable=False,
     )
 
+    source: Mapped[str] = mapped_column(String(32), server_default="manual", nullable=False)
+
     assigned_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,
     )
+
+
+class AppGlobalRoleMapping(Base):
+    __tablename__ = "app_global_role_mappings"
+    __table_args__ = (UniqueConstraint("app_id", "global_role_id", name="uq_app_global_role_mapping"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    app_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("apps.id", ondelete="CASCADE"), nullable=False)
+    global_role_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("global_roles.id", ondelete="CASCADE"), nullable=False)
+    app_role_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("roles.id", ondelete="CASCADE"), nullable=False)

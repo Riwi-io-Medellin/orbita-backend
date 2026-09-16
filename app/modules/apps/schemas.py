@@ -12,6 +12,10 @@ class AppCreate(BaseModel):
     description: str = Field(min_length=1, max_length=500)
     url: str = Field(min_length=8, max_length=2048)
     icon: str | None = Field(default=None, max_length=50)
+    role_cardinality: str = Field(default="multiple", pattern=r"^(single|multiple)$")
+    migration_access_enabled: bool = False
+    jit_role_adoption_enabled: bool = False
+    released_claims: list[str] = Field(default_factory=list, max_length=20)
 
     @field_validator("url")
     @classmethod
@@ -20,6 +24,14 @@ class AppCreate(BaseModel):
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("url must be an absolute HTTP(S) URL")
         return value
+
+    @field_validator("released_claims")
+    @classmethod
+    def validate_released_claims(cls, values: list[str]) -> list[str]:
+        normalized = sorted({value.strip().lower() for value in values if value.strip()})
+        if not set(normalized).issubset({"clan"}):
+            raise ValueError("Unsupported released claim")
+        return normalized
 
     model_config = {
         "json_schema_extra": {"example": {
@@ -39,6 +51,10 @@ class AppRead(BaseModel):
     client_id: str
     name: str
     is_active: bool
+    role_cardinality: str
+    migration_access_enabled: bool
+    jit_role_adoption_enabled: bool
+    released_claims: list[str]
 
     model_config = {
         "from_attributes": True,
@@ -100,6 +116,45 @@ class RedirectURIRead(BaseModel):
             }
         },
     }
+
+
+class PostLogoutURICreate(BaseModel):
+    post_logout_uri: str
+
+    @field_validator("post_logout_uri")
+    @classmethod
+    def validate_post_logout_uri(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.fragment:
+            raise ValueError("post_logout_uri must be an absolute HTTP(S) URL without a fragment")
+        return value
+
+
+class PostLogoutURIRead(BaseModel):
+    id: uuid.UUID
+    post_logout_uri: str
+    model_config = {"from_attributes": True}
+
+
+class AppPolicyUpdate(BaseModel):
+    role_cardinality: str = Field(pattern=r"^(single|multiple)$")
+    migration_access_enabled: bool
+    jit_role_adoption_enabled: bool
+    released_claims: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("released_claims")
+    @classmethod
+    def validate_released_claims(cls, values: list[str]) -> list[str]:
+        allowed = {"clan"}
+        normalized = sorted({value.strip().lower() for value in values if value.strip()})
+        if not set(normalized).issubset(allowed):
+            raise ValueError("Unsupported released claim")
+        return normalized
+
+
+class GlobalRoleMappingUpsert(BaseModel):
+    global_role: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]*$", max_length=50)
+    app_role: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]*$", max_length=80)
 
 
 class RoleCreate(BaseModel):

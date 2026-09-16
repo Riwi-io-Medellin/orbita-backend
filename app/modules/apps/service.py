@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import secrets
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -8,9 +9,9 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.apps.models import App, AppRedirectURI, Role, UserAppRole
+from app.modules.apps.models import App, AppGlobalRoleMapping, AppPostLogoutURI, AppRedirectURI, Role, UserAppRole
 from app.modules.apps.schemas import RoleCatalogEntry
-from app.modules.access.models import Application
+from app.modules.access.models import Application, GlobalRole, user_global_roles
 from app.modules.users.models import User
 from app.modules.apps.application_lifecycle import _PBKDF2_ITERATIONS, hash_client_secret
 from app.modules.auth.models import AppSession
@@ -130,8 +131,113 @@ class AppService:
 
         return result.scalar_one_or_none() is not None
 
+    @staticmethod
+    async def add_post_logout_uri(db: AsyncSession, app: App, uri: str) -> AppPostLogoutURI:
+        entry = AppPostLogoutURI(app_id=app.id, post_logout_uri=uri)
+        db.add(entry)
+        await db.commit()
+        await db.refresh(entry)
+        return entry
+
+    @staticmethod
+    async def validate_post_logout_uri(db: AsyncSession, app: App, uri: str) -> bool:
+        return await db.scalar(select(AppPostLogoutURI.id).where(
+            AppPostLogoutURI.app_id == app.id, AppPostLogoutURI.post_logout_uri == uri,
+        )) is not None
+
+    @staticmethod
+    async def update_policy(
+        db: AsyncSession,
+        app: App,
+        *,
+        role_cardinality: str,
+        migration_access_enabled: bool,
+        jit_role_adoption_enabled: bool,
+        released_claims: list[str],
+    ) -> App:
+        app.role_cardinality = role_cardinality
+        app.migration_access_enabled = migration_access_enabled
+        app.jit_role_adoption_enabled = jit_role_adoption_enabled
+        app.released_claims = released_claims
+        await db.commit()
+        await db.refresh(app)
+        return app
+
+    @staticmethod
+    async def upsert_global_role_mapping(db: AsyncSession, app: App, global_role_name: str, app_role_name: str) -> None:
+        global_role = await db.scalar(select(GlobalRole).where(GlobalRole.name == global_role_name))
+        app_role = await db.scalar(select(Role).where(
+            Role.app_id == app.id, Role.name == app_role_name, Role.is_active.is_(True),
+        ))
+        if global_role is None or app_role is None:
+            raise ValueError("Global role or app role not found")
+        existing = await db.scalar(select(AppGlobalRoleMapping).where(
+            AppGlobalRoleMapping.app_id == app.id,
+            AppGlobalRoleMapping.global_role_id == global_role.id,
+        ))
+        if existing:
+            existing.app_role_id = app_role.id
+        else:
+            db.add(AppGlobalRoleMapping(
+                app_id=app.id, global_role_id=global_role.id, app_role_id=app_role.id,
+            ))
+        await db.commit()
+
+
+@dataclass(frozen=True)
+class AppAccessResolution:
+    roles: list[str]
+    migration: bool = False
+
+
+def resolve_app_access_policy(
+    *,
+    global_roles: list[str],
+    explicit_roles: list[str],
+    mapped_roles: list[str],
+    role_cardinality: str,
+    migration_access_enabled: bool,
+) -> AppAccessResolution:
+    if not global_roles or "guest" in global_roles:
+        return AppAccessResolution([])
+    explicit = sorted(set(explicit_roles))
+    if explicit:
+        return AppAccessResolution(explicit) if role_cardinality != "single" or len(explicit) == 1 else AppAccessResolution([])
+    mapped = sorted(set(mapped_roles))
+    if mapped:
+        return AppAccessResolution(mapped) if role_cardinality != "single" or len(mapped) == 1 else AppAccessResolution([])
+    return AppAccessResolution([], migration=migration_access_enabled)
+
 
 class RoleService:
+
+    @staticmethod
+    async def resolve_access(db: AsyncSession, user_id: UUID, app: App) -> AppAccessResolution:
+        global_roles = list(await db.scalars(
+            select(GlobalRole.name)
+            .join(user_global_roles, user_global_roles.c.global_role_id == GlobalRole.id)
+            .where(user_global_roles.c.user_id == user_id)
+        ))
+        explicit = await RoleService.list_roles_for_user_in_app(db, user_id, app)
+
+        mapped = list(await db.scalars(
+            select(Role.name)
+            .join(AppGlobalRoleMapping, AppGlobalRoleMapping.app_role_id == Role.id)
+            .join(GlobalRole, GlobalRole.id == AppGlobalRoleMapping.global_role_id)
+            .join(user_global_roles, user_global_roles.c.global_role_id == GlobalRole.id)
+            .where(
+                AppGlobalRoleMapping.app_id == app.id,
+                user_global_roles.c.user_id == user_id,
+                Role.is_active.is_(True),
+            )
+        ))
+        return resolve_app_access_policy(
+            global_roles=global_roles,
+            explicit_roles=explicit,
+            mapped_roles=mapped,
+            role_cardinality=app.role_cardinality,
+            migration_access_enabled=app.migration_access_enabled,
+        )
 
     @staticmethod
     async def create_role(
@@ -198,6 +304,8 @@ class RoleService:
         user_id: UUID,
         app: App,
         role: Role,
+        *,
+        source: str = "manual",
     ) -> UserAppRole:
 
         existing_query = select(UserAppRole).where(
@@ -210,10 +318,20 @@ class RoleService:
         if existing is not None:
             return existing
 
+        if app.role_cardinality == "single":
+            conflicting = await db.scalar(select(UserAppRole.id).where(
+                UserAppRole.user_id == user_id,
+                UserAppRole.app_id == app.id,
+                UserAppRole.role_id != role.id,
+            ).limit(1))
+            if conflicting is not None:
+                raise ValueError("This app allows only one role per user")
+
         assignment = UserAppRole(
             user_id=user_id,
             app_id=app.id,
             role_id=role.id,
+            source=source,
         )
 
         db.add(assignment)
@@ -345,6 +463,15 @@ class RoleService:
 
         existing_ids = set(await db.scalars(select(User.id).where(User.id.in_(user_ids))))
         not_found_ids = [user_id for user_id in user_ids if user_id not in existing_ids]
+
+        if app.role_cardinality == "single" and existing_ids:
+            conflicting = await db.scalar(select(UserAppRole.id).where(
+                UserAppRole.user_id.in_(existing_ids),
+                UserAppRole.app_id == app.id,
+                UserAppRole.role_id != role.id,
+            ).limit(1))
+            if conflicting is not None:
+                raise ValueError("This app allows only one role per user")
 
         if existing_ids:
             await db.execute(

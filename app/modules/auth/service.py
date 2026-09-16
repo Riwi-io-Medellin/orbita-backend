@@ -11,14 +11,47 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.apps.models import App
 from app.modules.apps.service import AppService, RoleService
-from app.modules.auth.models import AppSession, AuthorizationCode
+from app.modules.auth.models import AppSession, AuthorizationCode, LogoutTicket
 from app.modules.users.models import User
 
 AUTHORIZATION_CODE_TTL_SECONDS = 60
+LOGOUT_TICKET_TTL_SECONDS = 60
 
 
 def _hash_authorization_code(code: str) -> str:
     return hashlib.sha256(code.encode("utf-8")).hexdigest()
+
+
+class LogoutTicketService:
+    @staticmethod
+    async def issue(db: AsyncSession, app: App, post_logout_uri: str) -> str:
+        ticket = secrets.token_urlsafe(32)
+        db.add(LogoutTicket(
+            ticket_hash=_hash_authorization_code(ticket),
+            app_id=app.id,
+            post_logout_uri=post_logout_uri,
+            expires_at=datetime.now(UTC) + timedelta(seconds=LOGOUT_TICKET_TTL_SECONDS),
+        ))
+        await db.commit()
+        return ticket
+
+    @staticmethod
+    async def redeem(db: AsyncSession, ticket: str) -> LogoutTicket | None:
+        now = datetime.now(UTC)
+        result = await db.execute(
+            update(LogoutTicket)
+            .where(
+                LogoutTicket.ticket_hash == _hash_authorization_code(ticket),
+                LogoutTicket.used_at.is_(None),
+                LogoutTicket.expires_at > now,
+            )
+            .values(used_at=now)
+            .returning(LogoutTicket)
+        )
+        row = result.scalar_one_or_none()
+        if row is not None:
+            await db.commit()
+        return row
 
 
 class AuthorizationCodeService:
@@ -174,9 +207,9 @@ async def build_authorize_redirect(
             detail="redirect_uri is not registered for this app",
         )
 
-    roles = await RoleService.list_roles_for_user_in_app(db, user.id, app)
+    access = await RoleService.resolve_access(db, user.id, app)
 
-    if not roles:
+    if not access.roles and not access.migration:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User is not provisioned for this app",

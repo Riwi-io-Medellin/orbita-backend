@@ -64,6 +64,11 @@ The token is RS256 and contains at least:
 `roles` contains stable **role keys** owned by the consuming app. The app maps those keys to its own
 authorization rules. Orbita never interprets what a role permits inside an app.
 
+An app explicitly placed in migration mode may receive `roles: []` with `"migration": true`. That
+token grants no application role; it only permits the app to identify an existing local account and
+request adoption through `role_adoption_endpoint`. A token may also carry an `attributes` object with
+claims individually allowlisted for that app, such as `clan`; optional attributes are never roles.
+
 Token verification must also:
 
 - accept only the configured `RS256` algorithm and select the public key by `kid`;
@@ -126,7 +131,18 @@ Logout, user/app disabling, and role-assignment changes make an issued token ina
 introspection. Consumers that do not call introspection must still bound their local session to the
 JWT expiration (currently 30 minutes).
 
-## 7. Error handling and secret operations
+## 7. Migration and federated logout extensions
+
+`POST role_adoption_endpoint` receives the app token, client credentials and one catalog role. It
+derives the user only from the verified token, requires the per-app JIT switch, rejects a conflicting
+explicit role and revokes the presented session after success. Restart authorization to obtain the
+final token.
+
+For central logout, the backend requests a one-use URL from `logout_ticket_endpoint` using an exact
+registered `post_logout_uri`, then redirects the browser there. The ticket contains no JWT or client
+secret; Órbita consumes it, revokes the central session and redirects back.
+
+## 8. Error handling and secret operations
 
 - `400` from `/token`: code invalid, expired, reused or bound to another redirect URI; restart login.
 - `401`: invalid client credentials; alert operators without exposing the secret.
@@ -141,7 +157,7 @@ it to analytics/logs, and plan an incident response. Platform administrators can
 `POST /api/apps/{client_id}/rotate-secret`; the response returns the new value once and accepts the
 previous secret for 15 minutes, so coordinate the consuming deployment before rotating a live credential.
 
-## 8. Acceptance checklist for a new app
+## 9. Acceptance checklist for a new app
 
 Before production registration is considered complete, demonstrate:
 

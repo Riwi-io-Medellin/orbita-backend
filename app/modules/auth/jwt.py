@@ -42,6 +42,9 @@ def create_app_token(
     name: str,
     client_id: str,
     roles: list[str],
+    *,
+    migration: bool = False,
+    attributes: dict[str, str] | None = None,
 ) -> tuple[str, str, datetime]:
 
     jti = str(uuid.uuid4())
@@ -58,6 +61,10 @@ def create_app_token(
         "jti": jti,
         "exp": expire,
     }
+    if migration:
+        payload["migration"] = True
+    if attributes:
+        payload["attributes"] = attributes
 
     token = jwt.encode(
         payload,

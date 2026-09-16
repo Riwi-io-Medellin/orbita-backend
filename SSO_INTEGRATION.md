@@ -102,6 +102,12 @@ On an unknown `kid`, refresh JWKS once and retry verification; if it is still un
 token. Never accept the algorithm from the token as configuration, and never log the raw code, token
 or secret.
 
+Clients configured for a controlled migration may also receive `migration: true` with an empty
+`roles` array. Only those clients may call `POST /api/auth/adopt-role`, using their client secret and
+the current app token; the user identity is always taken from that token. An application may also
+receive an `attributes` object containing only claims explicitly released to it. Both extensions are
+optional, so clients that do not use them remain compatible.
+
 ## 5. Logout and revocation
 
 When a user logs out of Orbita, Orbita revokes every token it has issued on their behalf — but revocation is enforced server-side, not by invalidating the JWT's signature. A revoked token still decodes and verifies fine locally via JWKS; only Orbita's own record knows it's revoked. So:
@@ -180,7 +186,7 @@ ENABLE_MICROSOFT_LOGIN=true
 ALLOWED_IDENTITY_EMAIL_DOMAINS=riwi.io
 ```
 
-Keep `JWT_KID` stable while the key pair is unchanged. The private key must only exist in the Orbita backend; client applications use the public JWKS endpoint. `PLATFORM_ADMIN_EMAILS` bootstraps the first administrators and may be narrowed after normal administration is established.
+Keep `JWT_KID` stable while the key pair is unchanged. The private key must only exist in the Orbita backend; client applications use the public JWKS endpoint. `PLATFORM_ADMIN_EMAILS` grants the global `admin` role to existing accounts at startup and may be narrowed after normal administration is established.
 
 Railway runs Alembic in the configured pre-deploy command; a migration failure prevents the new web
 deployment from receiving traffic. Deploy the backend before registering SSO clients, then deploy each
