@@ -1,11 +1,8 @@
-"""retain the applied local-password migration for rollback compatibility
+"""add local password change flag
 
 Revision ID: o4d5e6f7a8b9
 Revises: n3c4d5e6f7a8
 
-The application feature that used this column was reverted, but production has
-already recorded this Alembic revision. Keeping the migration allows the
-previous application version to start against that database state.
 """
 from alembic import op
 import sqlalchemy as sa

@@ -52,6 +52,8 @@ El trabajo de seguridad y operación pendiente está priorizado en [SECURITY_HAR
 | POST | `/api/auth/moodle/password-reset` | Solicitud genérica de recuperación Moodle |
 | GET | `/api/auth/login` | Redirige a Microsoft OAuth cuando está habilitado |
 | POST | `/api/auth/login` | Login local temporal cuando está habilitado |
+| PATCH | `/api/auth/me` | Actualización del nombre de una cuenta local |
+| POST | `/api/auth/me/password` | Cambio de contraseña local y finalización del primer acceso |
 | GET | `/api/auth/callback` | Callback Microsoft, resuelve identidad y emite cookie |
 | POST | `/api/auth/logout` | Limpia cookie de sesión |
 | GET | `/api/auth/me` | Usuario autenticado actual |
@@ -63,6 +65,8 @@ El trabajo de seguridad y operación pendiente está priorizado en [SECURITY_HAR
 | GET | `/api/applications/` | Catálogo autorizado del usuario |
 | * | `/api/apps/*` | Registro SSO, callbacks, roles y miembros |
 | * | `/api/users/*` | Administración de usuarios, accesos e identidades externas |
+
+Los administradores pueden crear cuentas locales con una contraseña temporal que se entrega una sola vez. La obligación de reemplazarla se aplica únicamente a sesiones iniciadas con credenciales locales; los inicios de sesión Moodle y Microsoft conservan sus flujos independientes.
 
 ## Verificación
 

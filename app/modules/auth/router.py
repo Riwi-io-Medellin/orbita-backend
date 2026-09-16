@@ -44,7 +44,9 @@ from app.modules.auth.schemas import (
     LogoutTicketResponse,
     MoodleLoginRequest,
     MoodlePasswordResetRequest,
+    PasswordChangeRequest,
     PasswordLoginRequest,
+    ProfileUpdateRequest,
     RegisterRequest,
     TokenExchangeRequest,
     TokenResponse,
@@ -134,12 +136,23 @@ def _user_is_unavailable(user: User) -> bool:
     return not user.is_active or user.deleted_at is not None
 
 
+def _central_auth_method(request: Request) -> str | None:
+    payload = decode_access_token(request.cookies.get(settings.access_cookie_name, ""))
+    auth_method = payload.get("auth_method")
+    return auth_method if isinstance(auth_method, str) else None
+
+
+def _local_password_change_required(request: Request, user: User) -> bool:
+    return bool(getattr(user, "must_change_password", False) and _central_auth_method(request) == "local")
+
+
 async def _issue_central_session(
     db: AsyncSession,
     user: User,
     request: Request,
     response: JSONResponse | RedirectResponse,
     *,
+    auth_method: str,
     event: str = "login",
 ) -> JSONResponse | RedirectResponse:
     if _user_is_unavailable(user):
@@ -150,7 +163,12 @@ async def _issue_central_session(
 
     await AccessService.ensure_default_role(db, user)
     roles = await AccessService.role_names(db, user.id)
-    access_token = create_access_token(user_id=str(user.id), email=user.email, roles=roles)
+    access_token = create_access_token(
+        user_id=str(user.id),
+        email=user.email,
+        roles=roles,
+        auth_method=auth_method,
+    )
     await AccessService.audit(db, event=event, user_id=user.id, request=request)
     _set_access_token_cookie(response, access_token)
     return response
@@ -301,7 +319,14 @@ async def moodle_login(
     for event, details in resolution.events:
         await AccessService.audit(db, event=event, user_id=resolution.user.id, request=request, details=details)
     response = JSONResponse(content={"message": "Authenticated"})
-    return await _issue_central_session(db, resolution.user, request, response, event="login.moodle")
+    return await _issue_central_session(
+        db,
+        resolution.user,
+        request,
+        response,
+        auth_method="moodle",
+        event="login.moodle",
+    )
 
 
 @router.post(
@@ -392,6 +417,9 @@ async def start_sso_authorization(
             status_code=302,
         )
 
+    if _local_password_change_required(request, user):
+        return RedirectResponse(url=f"{settings.frontend_url}/settings", status_code=302)
+
     try:
         return await build_authorize_redirect(db, user, client_id, redirect_uri, state)
     except HTTPException as exc:
@@ -425,6 +453,9 @@ async def resume_sso_authorization(
             url=f"{settings.frontend_url}/auth?continue=sso",
             status_code=302,
         )
+
+    if _local_password_change_required(request, user):
+        return RedirectResponse(url=f"{settings.frontend_url}/settings", status_code=302)
 
     request.session.pop("pending_authorize", None)
     try:
@@ -799,7 +830,14 @@ async def handle_microsoft_callback(
             status_code=302,
         )
 
-    return await _issue_central_session(db, user, request, response, event="login.microsoft")
+    return await _issue_central_session(
+        db,
+        user,
+        request,
+        response,
+        auth_method="microsoft",
+        event="login.microsoft",
+    )
 
 @router.post(
     "/login",
@@ -859,7 +897,14 @@ async def password_login(
 
     await MoodleLoginRateLimiter.clear_success(db, settings, throttle_subject, request)
     response = JSONResponse(content={"message": "Authenticated"})
-    return await _issue_central_session(db, user, request, response, event="login.local")
+    return await _issue_central_session(
+        db,
+        user,
+        request,
+        response,
+        auth_method="local",
+        event="login.local",
+    )
 
 # Not wired up yet - uncomment to enable local account self-registration.
 # @router.post("/register")
@@ -919,6 +964,7 @@ async def register_user(
     },
 )
 async def get_current_user_profile(
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -931,4 +977,45 @@ async def get_current_user_profile(
         "active": current_user.is_active,
         "roles": roles,
         "role": roles[0] if roles else None,
+        "must_change_password": _local_password_change_required(request, current_user),
+        "is_local_account": current_user.is_local_account,
+        "auth_method": _central_auth_method(request),
     }
+
+
+@router.patch("/me", summary="Update the current local user's profile")
+async def update_current_user_profile(
+    payload: ProfileUpdateRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if not current_user.is_local_account:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This account is managed by an external provider")
+
+    current_user.full_name = payload.full_name.strip()
+    await db.commit()
+    await AccessService.audit(db, event="user.profile_updated", user_id=current_user.id, request=request)
+    return {"name": current_user.full_name}
+
+
+@router.post("/me/password", summary="Change the current local user's password")
+async def change_current_user_password(
+    payload: PasswordChangeRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if not current_user.is_local_account:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This account is managed by an external provider")
+    if not verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="La contraseña actual no coincide")
+    if payload.current_password == payload.new_password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="La nueva contraseña debe ser diferente")
+
+    current_user.password_hash = hash_password(payload.new_password)
+    current_user.must_change_password = False
+    await db.commit()
+    await AppSessionService.revoke_all_for_user(db, current_user.id)
+    await AccessService.audit(db, event="user.password_changed", user_id=current_user.id, request=request)
+    return {"message": "Contraseña actualizada"}

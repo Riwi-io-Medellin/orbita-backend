@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 BULK_MAX_IDS = 500
 
@@ -13,6 +13,8 @@ class UserAdminRead(BaseModel):
     is_active: bool
     deleted_at: datetime | None
     created_at: datetime
+    must_change_password: bool
+    is_local_account: bool
 
     model_config = {
         "from_attributes": True,
@@ -42,6 +44,15 @@ class UserStatusUpdate(BaseModel):
     is_active: bool
 
     model_config = {"json_schema_extra": {"example": {"is_active": True}}}
+
+
+class LocalUserCreate(BaseModel):
+    email: EmailStr
+    full_name: str = Field(min_length=1, max_length=255)
+
+
+class LocalUserCreated(UserAdminRead):
+    temporary_password: str
 
 
 class BulkUserIds(BaseModel):

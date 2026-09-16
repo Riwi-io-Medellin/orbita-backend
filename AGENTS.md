@@ -70,7 +70,7 @@ Hay dos políticas de aplicación:
 - `catalog`: es un lanzador. El acceso proviene de un rol global o de una asignación directa; Órbita no emite un token SSO.
 - `sso_role`: su visibilidad y autenticación dependen de al menos un rol asignado en esa app. Los grants directos y globales no deben saltarse esta regla.
 
-Un usuario nuevo comienza inactivo. `PLATFORM_ADMIN_EMAILS` otorga el rol global `admin` a cuentas existentes durante el arranque. Las cuentas sin rol quedan como `guest`; Moodle sincroniza el rol efectivo desde sus cursos. La eliminación de usuarios es lógica (`deleted_at` + `is_active=false`), no física.
+Un usuario nuevo proveniente de un proveedor comienza según la política de ese proveedor. Un administrador puede crear una cuenta local activa con contraseña temporal; solo una sesión iniciada mediante esa contraseña queda limitada hasta reemplazarla. Moodle y Microsoft no deben heredar ese bloqueo local. `PLATFORM_ADMIN_EMAILS` otorga el rol global `admin` a cuentas existentes durante el arranque. Las cuentas sin rol quedan como `guest`; Moodle sincroniza el rol efectivo desde sus cursos. La eliminación de usuarios es lógica (`deleted_at` + `is_active=false`), no física.
 
 El frontend puede ocultar opciones, pero nunca es un límite de seguridad. Toda ruta administrativa debe depender de `get_current_platform_admin`, que valida el rol global `admin`; toda ruta autenticada debe validar en backend la cookie y que el usuario siga activo.
 

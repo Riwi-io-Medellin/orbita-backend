@@ -1,7 +1,9 @@
+import secrets
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.session import get_db
@@ -11,6 +13,7 @@ from app.modules.access.service import AccessService
 from app.modules.apps.schemas import AppRoleRead
 from app.modules.apps.service import RoleService
 from app.modules.auth.dependencies import get_current_platform_admin
+from app.modules.auth.passwords import hash_password
 from app.modules.identity.models import ExternalIdentity, Provider
 from app.modules.users.models import User
 from app.modules.users.schemas import (
@@ -18,6 +21,8 @@ from app.modules.users.schemas import (
     BulkStatusUpdate,
     BulkUserIds,
     BulkUserStatusResult,
+    LocalUserCreate,
+    LocalUserCreated,
     UserAdminRead,
     UserExternalIdentityRead,
     UserStatusUpdate,
@@ -54,6 +59,51 @@ async def list_users(
         limit=limit,
         offset=offset,
     )
+
+
+@router.post(
+    "/",
+    response_model=LocalUserCreated,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a local Orbita user",
+    responses={409: {"model": ErrorDetail, "description": "The email is already registered."}},
+)
+async def create_local_user(
+    payload: LocalUserCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Creates an active local account and returns its temporary password once."""
+    email = str(payload.email).strip().lower()
+    if await UserService.get_by_email(db, email) is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
+
+    temporary_password = secrets.token_urlsafe(12)
+    try:
+        user = await UserService.create_local_user(
+            db,
+            email=email,
+            full_name=payload.full_name.strip(),
+            password_hash=hash_password(temporary_password),
+            is_active=True,
+            must_change_password=True,
+        )
+        await AccessService.ensure_default_role(db, user)
+        await AccessService.audit(
+            db,
+            event="user.local_created",
+            user_id=user.id,
+            request=request,
+            details={"created_by_admin": True},
+        )
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
+
+    return LocalUserCreated.model_validate({
+        **UserAdminRead.model_validate(user).model_dump(),
+        "temporary_password": temporary_password,
+    })
 
 
 # Bulk routes are declared before the "/{user_id}/..." routes below: they share

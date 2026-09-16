@@ -47,9 +47,11 @@ client changes both records atomically.
 | GET | `/auth/providers` | Public | Returns which of Moodle, Microsoft and local login are currently available. Provider availability is enforced by the backend. |
 | POST | `/auth/moodle/login` | Public | Body: `{username,password}`. Reads active course profiles without persisting the password or token. `manager`/`gestor` map to `admin`, `editingteacher`/`teacher` to `teamleader`, `student` to `coder`, and unknown roles resolve to `guest`. For coders, one unique Moodle group is retained as the optional clan attribute. |
 | POST | `/auth/moodle/password-reset` | Public | Body: `{identifier,identifier_type}` where `identifier_type` is `username` or `email`. Requests Moodle's password-reset flow through Orbita without a Moodle token and always returns a generic confirmation when accepted. |
-| POST | `/auth/login` | Public | Local email/password login. Sets the central cookie. `401` invalid credentials; `403` inactive user. |
+| POST | `/auth/login` | Public | Local email/password login. Sets the central cookie. `401` invalid credentials; `403` inactive user. A temporary local password limits only that local session to profile/password endpoints until replaced; Moodle and Microsoft sessions for the same canonical user are not affected. |
 | GET | `/auth/csrf` | Session | Returns a short-lived, session-bound token for `X-CSRF-Token` on cookie-authenticated mutations. |
-| GET | `/auth/me` | Session | Current profile and global roles. App-scoped roles are intentionally excluded. |
+| GET | `/auth/me` | Session | Current profile, global roles, authentication method and local-account/password-change flags. App-scoped roles are intentionally excluded. |
+| PATCH | `/auth/me` | Local account + CSRF | Updates the caller's display name. External-only accounts are managed by their provider. |
+| POST | `/auth/me/password` | Local account + CSRF | Changes the local password after verifying the current one, clears the first-login requirement and revokes recorded app sessions. |
 | POST | `/auth/logout` | Public/session | Clears the central cookie and revokes the caller's recorded app sessions. Always succeeds. |
 | GET | `/auth/authorize` | Public/session | Starts an authorization-code SSO handoff. Query: `client_id`, exact registered `redirect_uri`, `state` (16–512 chars). Redirects with `code` and `state`; if an already authenticated user has no app role, redirects to the frontend with `error=sso_access_denied`. |
 | GET | `/auth/resume` | Public/session | Continues the handoff saved by `/auth/authorize` after central login. |
@@ -99,7 +101,7 @@ endpoint, which is server-to-server and accepts only the target app's client cre
 | DELETE | `/apps/{client_id}/roles/{role_id}/assign?user_id={user_id}` | Removes that one app-role assignment. |
 | POST | `/apps/{client_id}/roles/{role_id}/assign/bulk` | Assigns one app role to 1–500 users. |
 | POST | `/apps/{client_id}/roles/{role_id}/unassign/bulk` | Removes one app role from 1–500 users. |
-| GET | `/apps/{client_id}/users` | Lists user-role rows for the app. Query: `limit` 1–250, `offset` ≥0. A user with several roles has several rows. |
+| GET | `/apps/{client_id}/users` | Lists user-role rows for the app: `user_id`, `email`, `full_name`, `role_id` and `role_name`. Query: `limit` 1–250, `offset` ≥0. A user with several roles has several rows. |
 | PUT | `/apps/{client_id}/role-catalog` | Server-to-server, authenticated by that app's `client_secret` in the body. Upserts its declared roles and deactivates missing previously synchronized roles without deleting assignments. |
 | PUT | `/apps/{client_id}/policy` | Configures role cardinality, temporary migration access, JIT adoption and optional released claims. |
 | PUT | `/apps/{client_id}/global-role-mapping` | Maps one global role to one role owned by the app. |
@@ -112,6 +114,7 @@ All endpoints in this section require a platform-admin session.
 | Method | Path | Contract |
 | --- | --- | --- |
 | GET | `/users/` | Lists users. Query: `limit`, `offset`, optional `is_active`, `search`, `include_deleted`. |
+| POST | `/users/` | Creates an active local Orbita account from `{email,full_name}` and returns its generated temporary password once. The password must be replaced on the first local session. |
 | PATCH | `/users/{user_id}/status` | Enables/disables one user. An admin cannot deactivate themself. |
 | DELETE | `/users/{user_id}` | Soft-deletes one user and disables it. An admin cannot delete themself. |
 | PATCH | `/users/bulk/status` | Enables/disables 1–500 users. A bulk deactivation cannot include the caller. |

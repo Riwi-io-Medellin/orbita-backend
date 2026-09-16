@@ -13,6 +13,13 @@ from app.modules.users.service import UserService
 
 security = HTTPBearer()
 
+_PASSWORD_CHANGE_ALLOWED_PATHS = {
+    "/api/auth/csrf",
+    "/api/auth/logout",
+    "/api/auth/me",
+    "/api/auth/me/password",
+}
+
 
 async def get_current_user(
     request: Request,
@@ -50,6 +57,16 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User is inactive",
+        )
+
+    if (
+        user.must_change_password
+        and payload.get("auth_method") == "local"
+        and request.url.path not in _PASSWORD_CHANGE_ALLOWED_PATHS
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="password_change_required",
         )
 
     return user
