@@ -284,6 +284,7 @@ class UserAppRoleRead(BaseModel):
     user_id: uuid.UUID
     email: str
     full_name: str
+    role_id: uuid.UUID
     role_name: str
 
     model_config = {
@@ -292,6 +293,7 @@ class UserAppRoleRead(BaseModel):
                 "user_id": "6a2c18e6-0fc1-49bd-8b0e-d76f42ed4790",
                 "email": "user@example.com",
                 "full_name": "Jane Doe",
+                "role_id": "3d338516-48ff-4a01-a607-0501be303935",
                 "role_name": "staff",
             }
         }

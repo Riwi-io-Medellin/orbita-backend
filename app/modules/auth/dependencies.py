@@ -14,7 +14,7 @@ from app.modules.users.service import UserService
 security = HTTPBearer()
 
 
-async def get_current_user(
+async def get_authenticated_user(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
@@ -52,6 +52,14 @@ async def get_current_user(
             detail="User is inactive",
         )
 
+    return user
+
+
+async def get_current_user(
+    user: User = Depends(get_authenticated_user),
+) -> User:
+    if user.must_change_password:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="password_change_required")
     return user
 
 
