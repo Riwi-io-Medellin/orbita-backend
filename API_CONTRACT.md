@@ -45,7 +45,7 @@ client changes both records atomically.
 | GET | `/auth/login` | Public | Starts Microsoft OAuth; `302` to Microsoft. |
 | GET | `/auth/callback` | Public | Microsoft callback; establishes the central cookie and redirects to the frontend or pending SSO client. |
 | GET | `/auth/providers` | Public | Returns which of Moodle, Microsoft and local login are currently available. Provider availability is enforced by the backend. |
-| POST | `/auth/moodle/login` | Public | Body: `{username,password}`. Validates credentials through Moodle without persisting its password or token, resolves the canonical Orbita user, reads active course roles, and sets the central cookie. `manager`/`gestor`, `editingteacher`/`teacher` and `student` map to `admin`, `teamleader` and `coder`; no recognized role resolves to `guest` unless an admin set a manual exception. Returns `429` for throttling and `503` when Moodle is disabled/unavailable. |
+| POST | `/auth/moodle/login` | Public | Body: `{username,password}`. Reads active course profiles without persisting the password or token. `manager`/`gestor` map to `admin`, `editingteacher`/`teacher` to `teamleader`, `student` to `coder`, and unknown roles resolve to `guest`. For coders, one unique Moodle group is retained as the optional clan attribute. |
 | POST | `/auth/moodle/password-reset` | Public | Body: `{identifier,identifier_type}` where `identifier_type` is `username` or `email`. Requests Moodle's password-reset flow through Orbita without a Moodle token and always returns a generic confirmation when accepted. |
 | POST | `/auth/login` | Public | Local email/password login. Sets the central cookie. `401` invalid credentials; `403` inactive user. |
 | GET | `/auth/csrf` | Session | Returns a short-lived, session-bound token for `X-CSRF-Token` on cookie-authenticated mutations. |
@@ -55,6 +55,9 @@ client changes both records atomically.
 | GET | `/auth/resume` | Public/session | Continues the handoff saved by `/auth/authorize` after central login. |
 | POST | `/auth/token` | Client credentials | Exchanges a single-use, ~60-second code for a 30-minute RS256 JWT. Body: `code`, `client_id`, `client_secret`, `redirect_uri`. |
 | POST | `/auth/introspect` | Client credentials | Body: `token`, `client_id`, `client_secret`. Returns `200 {active:false}` for revoked, expired, wrong-audience, unavailable app/user, or changed roles. |
+| POST | `/auth/adopt-role` | Client credentials + app token | Imports the current token subject's legacy role while that app's JIT migration switch is enabled. |
+| POST | `/auth/logout-ticket` | Client credentials | Creates a 60-second, one-use browser logout URL bound to an exact registered return URI. |
+| GET | `/auth/end-session` | Logout ticket | Revokes the central browser session, clears its cookie and returns to the registered app URI. |
 | POST | `/apps/{client_id}/rotate-secret` | Platform admin + CSRF | Returns the replacement secret once; the previous secret expires in 15 minutes. |
 
 The token's `aud` equals `client_id`; clients must verify signature, expiration and audience using JWKS.
@@ -98,6 +101,9 @@ endpoint, which is server-to-server and accepts only the target app's client cre
 | POST | `/apps/{client_id}/roles/{role_id}/unassign/bulk` | Removes one app role from 1–500 users. |
 | GET | `/apps/{client_id}/users` | Lists user-role rows for the app. Query: `limit` 1–250, `offset` ≥0. A user with several roles has several rows. |
 | PUT | `/apps/{client_id}/role-catalog` | Server-to-server, authenticated by that app's `client_secret` in the body. Upserts its declared roles and deactivates missing previously synchronized roles without deleting assignments. |
+| PUT | `/apps/{client_id}/policy` | Configures role cardinality, temporary migration access, JIT adoption and optional released claims. |
+| PUT | `/apps/{client_id}/global-role-mapping` | Maps one global role to one role owned by the app. |
+| POST | `/apps/{client_id}/post-logout-uris` | Adds an exact allowlisted URI for federated logout return. |
 
 ## User administration
 

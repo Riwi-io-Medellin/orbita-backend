@@ -58,6 +58,8 @@ El trabajo de seguridad y operación pendiente está priorizado en [SECURITY_HAR
 | GET | `/api/auth/authorize` | Inicia un handoff SSO |
 | POST | `/api/auth/token` | Canje server-to-server por JWT de aplicación |
 | POST | `/api/auth/introspect` | Consulta optativa de sesión emitida |
+| POST | `/api/auth/adopt-role` | Migración JIT de un rol local para el mismo sujeto |
+| POST | `/api/auth/logout-ticket` | Ticket de logout federado |
 | GET | `/api/applications/` | Catálogo autorizado del usuario |
 | * | `/api/apps/*` | Registro SSO, callbacks, roles y miembros |
 | * | `/api/users/*` | Administración de usuarios, accesos e identidades externas |

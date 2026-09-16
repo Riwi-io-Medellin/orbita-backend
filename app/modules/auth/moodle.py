@@ -21,19 +21,30 @@ class MoodleAuthenticatedUser:
     email: str
     full_name: str
     role_shortnames: tuple[str, ...]
+    clan_name: str | None = None
+    clan_status: str = "missing"
 
 
 MOODLE_ROLE_MAP = {
+    "manager": "admin",
+    "gestor": "admin",
     "editingteacher": "teamleader",
     "teacher": "teamleader",
     "student": "coder",
 }
-MOODLE_ROLE_PRIORITY = ("teamleader", "coder")
+MOODLE_ROLE_PRIORITY = ("admin", "teamleader", "coder")
 
 
 def mapped_orbita_role(role_shortnames: tuple[str, ...]) -> str | None:
     mapped = {MOODLE_ROLE_MAP.get(role.strip().lower()) for role in role_shortnames}
     return next((role for role in MOODLE_ROLE_PRIORITY if role in mapped), None)
+
+
+def resolve_moodle_clan(group_names: tuple[str, ...]) -> tuple[str | None, str]:
+    unique = sorted({name.strip() for name in group_names if name.strip()})
+    if len(unique) == 1:
+        return unique[0], "synced"
+    return None, "missing" if not unique else "ambiguous"
 
 
 class MoodleClient:
@@ -87,7 +98,7 @@ class MoodleClient:
                     raise MoodleUnavailableError("Moodle did not return courses")
                 semaphore = asyncio.Semaphore(5)
 
-                async def profile_roles(course_id: object) -> tuple[str, ...]:
+                async def profile_access(course_id: object) -> tuple[tuple[str, ...], tuple[str, ...]]:
                     async with semaphore:
                         course_profiles = await self._call(
                             client,
@@ -103,14 +114,20 @@ class MoodleClient:
                     course_profile = course_profiles[0]
                     if str(course_profile.get("id")) != str(user_id):
                         raise MoodleUnavailableError("Moodle returned a mismatched course profile")
-                    return tuple(
+                    roles = tuple(
                         str(role.get("shortname") or "").strip().lower()
                         for role in course_profile.get("roles", [])
                         if isinstance(role, dict) and role.get("shortname")
                     )
+                    groups = tuple(
+                        str(group.get("name") or "").strip()
+                        for group in course_profile.get("groups", [])
+                        if isinstance(group, dict) and str(group.get("name") or "").strip()
+                    ) if "student" in roles else ()
+                    return roles, groups
 
-                role_groups = await asyncio.gather(
-                    *(profile_roles(course.get("id")) for course in courses if isinstance(course, dict) and course.get("id")),
+                course_access = await asyncio.gather(
+                    *(profile_access(course.get("id")) for course in courses if isinstance(course, dict) and course.get("id")),
                 )
         except MoodleCredentialsError:
             raise
@@ -122,10 +139,19 @@ class MoodleClient:
         profile = profiles[0]
         if str(profile.get("id")) != str(user_id):
             raise MoodleUnavailableError("Moodle returned a mismatched profile")
+        roles = tuple(sorted({role for course_roles, _ in course_access for role in course_roles}))
+        clan_name, clan_status = resolve_moodle_clan(tuple(
+            name for _, group_names in course_access for name in group_names
+        ))
         email = normalize_email(profile.get("email"))
-        if not email:
-            return MoodleAuthenticatedUser(str(user_id), "", str(profile.get("fullname") or ""), tuple(sorted({role for group in role_groups for role in group})))
-        return MoodleAuthenticatedUser(str(user_id), email, str(profile.get("fullname") or ""), tuple(sorted({role for group in role_groups for role in group})))
+        return MoodleAuthenticatedUser(
+            str(user_id),
+            email or "",
+            str(profile.get("fullname") or ""),
+            roles,
+            clan_name,
+            clan_status,
+        )
 
     async def request_password_reset(self, *, identifier: str, identifier_type: str) -> None:
         """Requests Moodle's own password-reset email without a Moodle token."""

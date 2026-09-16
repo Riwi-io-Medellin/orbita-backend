@@ -10,7 +10,12 @@ from app.modules.auth.csrf import verify_csrf_token
 from app.modules.auth.jwt import decode_access_token
 
 _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-_SERVER_TO_SERVER_PATHS = {"/api/auth/token", "/api/auth/introspect"}
+_SERVER_TO_SERVER_PATHS = {
+    "/api/auth/token",
+    "/api/auth/introspect",
+    "/api/auth/adopt-role",
+    "/api/auth/logout-ticket",
+}
 _PUBLIC_AUTH_PATHS = {
     "/api/auth/login",
     "/api/auth/moodle/login",

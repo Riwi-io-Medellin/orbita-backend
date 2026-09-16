@@ -147,9 +147,11 @@ def orbita_configuration(request: Request):
         "token_endpoint": f"{issuer}/api/auth/token",
         "jwks_uri": f"{issuer}/api/.well-known/jwks.json",
         "introspection_endpoint": f"{issuer}/api/auth/introspect",
+        "role_adoption_endpoint": f"{issuer}/api/auth/adopt-role",
+        "logout_ticket_endpoint": f"{issuer}/api/auth/logout-ticket",
         "role_catalog_sync_endpoint": f"{issuer}/api/apps/{{client_id}}/role-catalog",
         "token_signing_alg_values_supported": ["RS256"],
-        "claims_supported": ["sub", "email", "name", "aud", "roles", "jti", "exp"],
+        "claims_supported": ["sub", "email", "name", "aud", "roles", "jti", "exp", "migration", "attributes"],
     }
 
 
